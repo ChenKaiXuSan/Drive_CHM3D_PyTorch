@@ -57,6 +57,19 @@
         "infer.person_list=[01]",
         "infer.env_list=[all]",
       ]
+    },
+    {
+      "name": "vis_head3d_fuse",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "vis_3d_kpt.main",
+      "cwd": "/workspace/code",
+      "python": "/opt/conda/envs/sam_3d_body/bin/python",
+      "console": "integratedTerminal",
+      "args": [
+        // "--person_list=[01]",
+        // "--env_list=[夜多い]",
+      ]
     }
   ]
 }

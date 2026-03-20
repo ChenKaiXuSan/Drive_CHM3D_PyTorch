@@ -144,8 +144,8 @@ def load_helper(
     person_info: OnePersonInfo,
     memory_efficient: bool = False,
 ) -> Tuple[
-    Union[np.ndarray, list], Union[np.ndarray, list], 
-    Union[np.ndarray, list], Union[np.ndarray, list], 
+    Union[np.ndarray, list], Union[np.ndarray, list], Union[np.ndarray, list],
+    Union[np.ndarray, list], Union[np.ndarray, list], Union[np.ndarray, list],
     np.ndarray, np.ndarray
 ]:
     if memory_efficient:
@@ -156,11 +156,17 @@ def load_helper(
         right_frames = list(
             load_video_frames(person_info.right_video_path, as_generator=True)
         )
+        front_frames = list(
+            load_video_frames(person_info.front_video_path, as_generator=True)
+        )
         left_2d_kpt = list(
             load_2d_keypoints(person_info.left_2d_kpt_path, as_generator=True)
         )
         right_2d_kpt = list(
             load_2d_keypoints(person_info.right_2d_kpt_path, as_generator=True)
+        )
+        front_2d_kpt = list(
+            load_2d_keypoints(person_info.front_2d_kpt_path, as_generator=True)
         )
         fused_3d_kpt = load_fused_3d_kpt(
             person_info.fused_3d_kpt_path, use_memmap=True
@@ -172,8 +178,10 @@ def load_helper(
         # 原有模式：一次性加载所有数据
         left_frames = load_video_frames(person_info.left_video_path)
         right_frames = load_video_frames(person_info.right_video_path)
+        front_frames = load_video_frames(person_info.front_video_path)
         left_2d_kpt = load_2d_keypoints(person_info.left_2d_kpt_path)
         right_2d_kpt = load_2d_keypoints(person_info.right_2d_kpt_path)
+        front_2d_kpt = load_2d_keypoints(person_info.front_2d_kpt_path)
         fused_3d_kpt = load_fused_3d_kpt(person_info.fused_3d_kpt_path)
         fused_smoothed_3d_kpt = load_fused_3d_kpt(
             person_info.fused_smoothed_3d_kpt_path
@@ -182,8 +190,10 @@ def load_helper(
     return (
         left_frames,
         right_frames,
+        front_frames,
         left_2d_kpt,
         right_2d_kpt,
+        front_2d_kpt,
         fused_3d_kpt,
         fused_smoothed_3d_kpt,
     )

@@ -9,7 +9,7 @@ hydra:
 paths:
   video_path: /workspace/data/videos_split
   result_output_path: /workspace/data/head3d_fuse_results
-  sam3d_results_path: /workspace/data/sam3d_body_results_right
+  sam3d_results_path: /workspace/data/sam3d_body_results_right_full # sam3d的结果路径，包含每个视角的3D关键点数据
   start_mid_end_path: /workspace/data/annotation/split_mid_end/mini.json # 我们不需要推导左右的frame，按照这里面的start和mid来进行推导
 
 log_path: logs/head3d_fuse/${now:%Y-%m-%d}/${now:%H-%M-%S}

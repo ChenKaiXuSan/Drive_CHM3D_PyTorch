@@ -4,12 +4,51 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Tuple
 
-from .load import OnePersonInfo
-from .visualize import run_visualization
+from vis_3d_kpt.load import OnePersonInfo, np
+from vis_3d_kpt.visualize import run_visualization
 
 logger = logging.getLogger(__name__)
+
+
+def _build_sequence_npy(frame_files: list[Path], save_path: Path) -> Path:
+    """将按帧保存的 npy 文件堆叠为 (T, N, 3) 序列并落盘。"""
+    if not frame_files:
+        raise ValueError("frame_files 为空，无法构建序列")
+
+    frames = [np.asarray(np.load(fp, allow_pickle=True), dtype=np.float32) for fp in frame_files]
+    seq = np.stack(frames, axis=0)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(save_path, seq)
+    return save_path
+
+
+def _resolve_required_paths(
+    args: argparse.Namespace,
+    person_id: str,
+    env_name: str,
+) -> tuple[Path, Path, Path, Path, Path, Path]:
+    """解析单个 person/env 需要的视频与2D关键点路径。"""
+    video_dir = args.video_dir.resolve()
+    sam3d_results_dir = args.sam3d_results_dir.resolve()
+
+    left_video = video_dir / person_id / env_name / "left.mp4"
+    right_video = video_dir / person_id / env_name / "right.mp4"
+    front_video = video_dir / person_id / env_name / "front.mp4"
+
+    left_2d = sam3d_results_dir / person_id / env_name / "left"
+    right_2d = sam3d_results_dir / person_id / env_name / "right"
+    front_2d = sam3d_results_dir / person_id / env_name / "front"
+
+    return left_video, right_video, front_video, left_2d, right_2d, front_2d
+
+
+def _all_paths_exist(paths: list[Path]) -> bool:
+    for p in paths:
+        if not p.exists():
+            logger.warning("缺少输入路径，跳过: %s", p)
+            return False
+    return True
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,22 +62,22 @@ def parse_args() -> argparse.Namespace:
         help="head3d_fuse_results 根目录，结构为 {person_id}/{env_name}/{fused|smoothed}_npz/",
     )
     parser.add_argument(
-        "--out-dir",
-        type=Path,
-        default=Path("/workspace/code/logs/3d_vis_head3d"),
-        help="输出目录，将保留原目录结构",
-    )
-    parser.add_argument(
         "--video-dir",
         type=Path,
-        default=None,
+        default=Path("/workspace/data/videos_split"),
         help="视频文件所在目录（可选），用于叠加原始视频",
     )
     parser.add_argument(
         "--sam3d-results-dir",
         type=Path,
-        default=None,
+        default=Path("/workspace/data/sam3d_body_results_right_full"),
         help="sam3d 2D 关键点结果目录（可选）",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("/workspace/code/logs/3d_vis_head3d"),
+        help="输出目录，将保留原目录结构",
     )
     parser.add_argument(
         "--person-list",
@@ -125,10 +164,11 @@ def find_head3d_fuse_results(
             if data_type in ["smoothed", "both"]:
                 smoothed_dir = env_dir / "smoothed_fused_npz"
                 if smoothed_dir.exists():
-                    smoothed_files = sorted(smoothed_dir.glob("*_smoothed.npy"))
+                    smoothed_files = sorted(smoothed_dir.glob("*_fused.npy"))
                     result[person_id][env_name]["smoothed"] = smoothed_files
 
     return result
+
 
 if __name__ == "__main__":
     # 设置日志
@@ -140,6 +180,10 @@ if __name__ == "__main__":
     args = parse_args()
     out_dir = args.out_dir.resolve()
     head3d_dir = args.head3d_dir.resolve()
+
+    # 这些目录是必需输入
+    args.video_dir = args.video_dir.resolve()
+    args.sam3d_results_dir = args.sam3d_results_dir.resolve()
 
     # 解析人员和环境列表
     person_list = None
@@ -171,35 +215,54 @@ if __name__ == "__main__":
             smoothed_count = len(env_data["smoothed"])
             logger.info(f"  {env_name}: {fused_count} 融合, {smoothed_count} 平滑")
 
+            if not env_data["fused"] or not env_data["smoothed"]:
+                logger.warning("缺少 fused/smoothed 数据，跳过 %s/%s", person_id, env_name)
+                continue
+
+            (
+                left_video_path,
+                right_video_path,
+                front_video_path,
+                left_2d_kpt_path,
+                right_2d_kpt_path,
+                front_2d_kpt_path,
+            ) = _resolve_required_paths(args, person_id, env_name)
+
+            if not _all_paths_exist(
+                [
+                    left_video_path,
+                    right_video_path,
+                    front_video_path,
+                    left_2d_kpt_path,
+                    right_2d_kpt_path,
+                    front_2d_kpt_path,
+                ]
+            ):
+                continue
+
+            # 输入是按帧 npy，先堆叠成序列 npy 再交给 run_visualization
+            seq_cache_dir = out_dir / person_id / env_name / "_sequence_cache"
+            fused_seq_path = _build_sequence_npy(
+                env_data["fused"], seq_cache_dir / "fused_sequence.npy"
+            )
+            smoothed_seq_path = _build_sequence_npy(
+                env_data["smoothed"], seq_cache_dir / "smoothed_sequence.npy"
+            )
+
             run_visualization(
                 person_info=OnePersonInfo(
                     person_name=person_id,
-                    left_video_path=video_dir / person_id / env_name / "left.mp4"
-                    if video_dir
-                    else Path(""),
-                    right_video_path=video_dir / person_id / env_name / "right.mp4"
-                    if video_dir
-                    else Path(""),
-                    left_2d_kpt_path=sam3d_results_dir
-                    / person_id
-                    / env_name
-                    / "left.npz"
-                    if sam3d_results_dir
-                    else Path(""),
-                    right_2d_kpt_path=sam3d_results_dir
-                    / person_id
-                    / env_name
-                    / "right.npz"
-                    if sam3d_results_dir
-                    else Path(""),
-                    fused_3d_kpt_path=env_data["fused"][0]
-                    if env_data["fused"]
-                    else Path(""),
-                    fused_smoothed_3d_kpt_path=env_data["smoothed"][0]
-                    if env_data["smoothed"]
-                    else Path(""),
+                    env_name=env_name,
+                    left_video_path=left_video_path,
+                    right_video_path=right_video_path,
+                    front_video_path=front_video_path,
+                    left_2d_kpt_path=left_2d_kpt_path,
+                    right_2d_kpt_path=right_2d_kpt_path,
+                    front_2d_kpt_path=front_2d_kpt_path,
+                    fused_3d_kpt_path=fused_seq_path,
+                    fused_smoothed_3d_kpt_path=smoothed_seq_path,
                 ),
-                output_dir=out_dir / person_id / env_name,
+                out_dir=out_dir / person_id / env_name,
             )
 
     logger.info("✅ 所有可视化已完成！")

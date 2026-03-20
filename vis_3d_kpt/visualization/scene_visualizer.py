@@ -152,6 +152,7 @@ class SceneVisualizer:
 
     def draw_frame_with_scene(
         self,
+        front_frame: np.ndarray,
         left_frame: np.ndarray,
         right_frame: np.ndarray,
         pose_3d: np.ndarray,  # (J,3)
@@ -161,28 +162,38 @@ class SceneVisualizer:
         渲染一个 frame：左图+右图+3D pose，并返回 figure。
         """
 
-        fig = plt.figure(figsize=(10, 10))
+        fig = plt.figure(figsize=(14, 9))
         fig.suptitle(f"Frame {frame_num}")
-        gs = GridSpec(2, 3, figure=fig)
+        gs = GridSpec(2, 4, figure=fig)
+
+        # -------- 前视角 ---------- #
+        axF = fig.add_subplot(gs[0, 0])
+        axF.imshow(front_frame)
+        axF.axis("off")
+        axF.set_title("Front view")
 
         # -------- 左视角 ---------- #
-        axL = fig.add_subplot(gs[0, 0])
+        axL = fig.add_subplot(gs[0, 1])
         axL.imshow(left_frame)
         axL.axis("off")
         axL.set_title("Left view")
 
         # -------- 右视角 ---------- #
-        axR = fig.add_subplot(gs[1, 0])
+        axR = fig.add_subplot(gs[0, 2])
         axR.imshow(right_frame)
         axR.axis("off")
         axR.set_title("Right view")
+
+        # 占位，保持上排视觉平衡
+        ax_pad = fig.add_subplot(gs[0, 3])
+        ax_pad.axis("off")
 
         # -------- 3D pose ---------- #
         # 交换y和z轴，并将z轴取反，使得y轴朝上，z轴朝前（相机看向人物）
         # pose_3d[:, [1, 2]] = pose_3d[:, [2, 1]]
         # pose_3d[:, 2] = -pose_3d[:, 2]
 
-        ax_3d_left = fig.add_subplot(gs[0, 1], projection="3d")
+        ax_3d_left = fig.add_subplot(gs[1, 0], projection="3d")
         ax_3d_left.set_title("left side view")
         self.draw_scene(
             kpts_world=pose_3d,
@@ -200,7 +211,7 @@ class SceneVisualizer:
             azim=-180,
         )
 
-        ax_3d_top_left = fig.add_subplot(gs[0, 2], projection="3d")
+        ax_3d_top_left = fig.add_subplot(gs[1, 2], projection="3d")
         ax_3d_top_left.set_title("top left view")
         self.draw_scene(
             kpts_world=pose_3d,
@@ -209,7 +220,7 @@ class SceneVisualizer:
             azim=0,
         )
 
-        ax_3d_top_right = fig.add_subplot(gs[1, 2], projection="3d")
+        ax_3d_top_right = fig.add_subplot(gs[1, 3], projection="3d")
         ax_3d_top_right.set_title("top right view")
         self.draw_scene(
             kpts_world=pose_3d,

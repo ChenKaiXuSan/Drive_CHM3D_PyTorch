@@ -51,8 +51,10 @@ def run_visualization(
     """
     left_frames = None
     right_frames = None
+    front_frames = None
     left_2d_kpt = None
     right_2d_kpt = None
+    front_2d_kpt = None
     fused_3d_kpt = None
     fused_smoothed_3d_kpt = None
 
@@ -65,8 +67,10 @@ def run_visualization(
         (
             left_frames,
             right_frames,
+            front_frames,
             left_2d_kpt,
             right_2d_kpt,
+            front_2d_kpt,
             fused_3d_kpt,
             fused_smoothed_3d_kpt,
         ) = load_helper(person_info, memory_efficient=True)
@@ -77,8 +81,10 @@ def run_visualization(
         frame_count = min(
             len(left_frames),
             len(right_frames),
+            len(front_frames),
             len(left_2d_kpt),
             len(right_2d_kpt),
+            len(front_2d_kpt),
             fused_3d_kpt.shape[0],
             fused_smoothed_3d_kpt.shape[0],
         )
@@ -91,8 +97,10 @@ def run_visualization(
                 process_frame(
                     left_frames=left_frames[frame_idx],
                     right_frames=right_frames[frame_idx],
+                    front_frames=front_frames[frame_idx],
                     left_2d_kpt=left_2d_kpt[frame_idx],
                     right_2d_kpt=right_2d_kpt[frame_idx],
+                    front_2d_kpt=front_2d_kpt[frame_idx],
                     fused_3d_kpt=fused_3d_kpt[frame_idx],
                     fused_smoothed_3d_kpt=fused_smoothed_3d_kpt[frame_idx],
                     frame_idx=frame_idx,
@@ -121,10 +129,14 @@ def run_visualization(
                 del left_frames
             if right_frames is not None:
                 del right_frames
+            if front_frames is not None:
+                del front_frames
             if left_2d_kpt is not None:
                 del left_2d_kpt
             if right_2d_kpt is not None:
                 del right_2d_kpt
+            if front_2d_kpt is not None:
+                del front_2d_kpt
             if fused_3d_kpt is not None:
                 del fused_3d_kpt
             if fused_smoothed_3d_kpt is not None:
@@ -138,8 +150,10 @@ def run_visualization(
 def process_frame(
     left_frames: np.ndarray,
     right_frames: np.ndarray,
+    front_frames: np.ndarray,
     left_2d_kpt: np.ndarray,
     right_2d_kpt: np.ndarray,
+    front_2d_kpt: np.ndarray,
     fused_3d_kpt: np.ndarray,
     fused_smoothed_3d_kpt: np.ndarray,
     frame_idx: int,
@@ -183,8 +197,12 @@ def process_frame(
     right_kpt_with_frame = skeleton_visualizer.draw_skeleton(
         image=right_frames, keypoints=right_2d_kpt
     )
+    front_kpt_with_frame = skeleton_visualizer.draw_skeleton(
+        image=front_frames, keypoints=front_2d_kpt
+    )
 
     _frame_scene = scene_visualizer.draw_frame_with_scene(
+        front_frame=front_kpt_with_frame,
         left_frame=left_kpt_with_frame,
         right_frame=right_kpt_with_frame,
         pose_3d=fused_smoothed_3d_kpt,
