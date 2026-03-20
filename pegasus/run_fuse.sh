@@ -2,8 +2,8 @@
 #PBS -A SSR
 #PBS -q gpu
 #PBS -l elapstim_req=24:00:00
-#PBS -N head3d_fuse_22nodes
-#PBS -t 0-21
+#PBS -N head3d_fuse
+#PBS -t 0-17
 #PBS -o logs/pegasus/head3d_fuse_group_${PBS_SUBREQNO}.log
 #PBS -e logs/pegasus/head3d_fuse_group_${PBS_SUBREQNO}_err.log
 
@@ -15,12 +15,14 @@ mkdir -p logs/pegasus/
 module load intelpython/2022.3.1
 source ${CONDA_PREFIX}/etc/profile.d/conda.sh
 conda deactivate
-conda activate /home/SSR/luoxi/miniconda3/envs/sam_3d_body
+# conda activate /home/SSR/luoxi/miniconda3/envs/sam_3d_body
+conda activate /home/SSR/luoxi/miniconda3/envs/multiview-video-cls
 
 conda env list
 
 # 一个数组任务对应一个人（01~21,24）
-PERSON_IDS=(01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18) # 19 20 21 24
+# PERSON_IDS=(01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18) 
+PERSON_IDS=(19 20 21 24)
 
 if [ -z "${PBS_SUBREQNO}" ]; then
     echo "[ERROR] PBS_SUBREQNO 未设置，请通过 qsub 的数组任务提交"
@@ -40,7 +42,7 @@ echo "Processing person: ${PERSON_ID}"
 
 # === 3. パス設定と実行 ===
 VIDEO_PATH="/work/SSR/share/data/drive/videos_split"
-SAM3D_RESULTS_PATH="/work/SSR/share/data/drive/sam3d_body_results_right_full"
+SAM3D_RESULTS_PATH="/work/SSR/share/data/drive/sam3d_body_results_right"
 HEAD3D_OUT_PATH="/work/SSR/share/data/drive/head3d_fuse_results"
 START_MID_END_PATH="/work/SSR/share/data/drive/annotation/split_mid_end/mini.json"
 
