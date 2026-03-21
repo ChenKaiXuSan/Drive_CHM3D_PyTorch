@@ -4,9 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import imageio.v2 as imageio_v2
+import cv2
 import numpy as np
-from PIL import Image
 
 
 def save_figure(image: Any, save_path: Path) -> None:
@@ -58,30 +57,31 @@ def merge_frame_to_video(save_path: Path, flag: str, fps: int = 30) -> Path:
 
     output_file = out_path / f"{flag}.mp4"
 
-    first_img = imageio_v2.imread(frames[0])
+    first_img = cv2.imread(str(frames[0]), cv2.IMREAD_UNCHANGED)
     first_img = _ensure_rgb_uint8(first_img)
     H, W = first_img.shape[:2]
 
-    # use FFMPEG backend
-    writer = imageio_v2.get_writer(output_file, fps=fps, format="FFMPEG", codec="libx264")
+    writer = None
+    for codec in ("avc1", "H264", "X264", "mp4v"):
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        candidate = cv2.VideoWriter(str(output_file), fourcc, float(fps), (W, H))
+        if candidate.isOpened():
+            writer = candidate
+            break
+        candidate.release()
+    if writer is None:
+        raise RuntimeError(f"Failed to open VideoWriter for {output_file}")
 
-    writer.append_data(first_img)
+    writer.write(first_img)
 
     for f in frames[1:]:
-        img = imageio_v2.imread(f)
+        img = cv2.imread(str(f), cv2.IMREAD_UNCHANGED)
         img = _ensure_rgb_uint8(img)
 
         if img.shape[0] != H or img.shape[1] != W:
-            img_pil = Image.fromarray(img)
-            # PIL resampling compatibility
-            try:
-                resample = Image.Resampling.BILINEAR  # type: ignore[attr-defined]
-            except Exception:
-                resample = Image.BILINEAR
-            img_pil = img_pil.resize((W, H), resample)
-            img = np.asarray(img_pil)
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
 
-        writer.append_data(img)
+        writer.write(img)
 
-    writer.close()
+    writer.release()
     return output_file

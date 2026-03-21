@@ -29,6 +29,28 @@ import cv2
 import numpy as np
 
 
+def _extract_pred_keypoints_2d_from_npz(loaded: np.lib.npyio.NpzFile) -> np.ndarray:
+    if "outputs" in loaded.files:
+        outputs = loaded["outputs"]
+        for item in outputs:
+            if isinstance(item, dict) and "pred_keypoints_2d" in item:
+                return item["pred_keypoints_2d"]
+
+    if "output" in loaded.files:
+        output = loaded["output"]
+        if getattr(output, "shape", None) == ():
+            output = output.item()
+        elif isinstance(output, np.ndarray) and len(output) > 0:
+            output = output[0]
+
+        if isinstance(output, dict) and "pred_keypoints_2d" in output:
+            return output["pred_keypoints_2d"]
+
+    raise KeyError(
+        f"未找到 pred_keypoints_2d，npz keys={loaded.files}"
+    )
+
+
 @dataclass
 class OnePersonInfo:
     person_name: str = ""
@@ -69,20 +91,13 @@ def load_2d_keypoints(file_path: Path, as_generator: bool = False):
         raise FileNotFoundError(f"文件不存在: {file_path}")
 
     if file_path.is_file() and file_path.suffix in [".npz"]:
-        loaded = np.load(file_path, allow_pickle=True)["outputs"]
+        loaded = np.load(file_path, allow_pickle=True)
+        kpts_2d = _extract_pred_keypoints_2d_from_npz(loaded)
 
         if as_generator:
-            # 返回生成器，逐帧yield
-            for i in loaded:
-                if isinstance(i, dict) and "pred_keypoints_2d" in i:
-                    yield i["pred_keypoints_2d"]
+            yield kpts_2d
         else:
-            res_list = []
-            for i in loaded:
-                if isinstance(i, dict) and "pred_keypoints_2d" in i:
-                    kpts_2d = i["pred_keypoints_2d"]
-                    res_list.append(kpts_2d)
-            return np.asarray(res_list, dtype=np.float64)
+            return np.asarray([kpts_2d], dtype=np.float64)
 
     elif file_path.is_dir():
         npz_files = sorted(list(file_path.rglob("*.npz")))
@@ -93,12 +108,12 @@ def load_2d_keypoints(file_path: Path, as_generator: bool = False):
             # 返回生成器，逐文件yield
             for npz_file in npz_files:
                 loaded = np.load(npz_file, allow_pickle=True)
-                yield loaded["outputs"][0]["pred_keypoints_2d"]
+                yield _extract_pred_keypoints_2d_from_npz(loaded)
         else:
             res_list = []
             for npz_file in npz_files:
                 loaded = np.load(npz_file, allow_pickle=True)
-                kpts_2d = loaded["outputs"][0]["pred_keypoints_2d"]
+                kpts_2d = _extract_pred_keypoints_2d_from_npz(loaded)
                 res_list.append(kpts_2d)
             return np.asarray(res_list, dtype=np.float64)
 

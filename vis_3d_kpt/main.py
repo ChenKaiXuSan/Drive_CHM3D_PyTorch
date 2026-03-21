@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from vis_3d_kpt.load import OnePersonInfo, np
@@ -11,12 +12,28 @@ from vis_3d_kpt.visualize import run_visualization
 logger = logging.getLogger(__name__)
 
 
+def _load_frame_keypoints(frame_path: Path) -> np.ndarray:
+    """加载单帧关键点，兼容数组与 dict 封装的 npy。"""
+    loaded = np.load(frame_path, allow_pickle=True)
+
+    # 某些文件保存为 object 标量，内部是 dict
+    if isinstance(loaded, np.ndarray) and loaded.dtype == object and loaded.shape == ():
+        loaded = loaded.item()
+
+    if isinstance(loaded, dict):
+        if "fused_keypoints_3d" not in loaded:
+            raise KeyError(f"{frame_path} 缺少 fused_keypoints_3d 字段")
+        loaded = loaded["fused_keypoints_3d"]
+
+    return np.asarray(loaded, dtype=np.float32)
+
+
 def _build_sequence_npy(frame_files: list[Path], save_path: Path) -> Path:
     """将按帧保存的 npy 文件堆叠为 (T, N, 3) 序列并落盘。"""
     if not frame_files:
         raise ValueError("frame_files 为空，无法构建序列")
 
-    frames = [np.asarray(np.load(fp, allow_pickle=True), dtype=np.float32) for fp in frame_files]
+    frames = [_load_frame_keypoints(fp) for fp in frame_files]
     seq = np.stack(frames, axis=0)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(save_path, seq)
@@ -98,7 +115,78 @@ def parse_args() -> argparse.Namespace:
         default="both",
         help="处理数据类型：fused（融合）、smoothed（平滑）或 both（两者）",
     )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=4,
+        help="多线程工作数量，精确到 env 级别",
+    )
     return parser.parse_args()
+
+
+def _process_single_env(
+    args: argparse.Namespace,
+    person_id: str,
+    env_name: str,
+    env_data: dict,
+    out_dir: Path,
+) -> tuple[str, str, bool, str]:
+    """处理单个 env，返回 (person_id, env_name, success, message)。"""
+    try:
+        if not env_data["fused"] or not env_data["smoothed"]:
+            msg = f"缺少 fused/smoothed 数据"
+            return person_id, env_name, False, msg
+
+        (
+            left_video_path,
+            right_video_path,
+            front_video_path,
+            left_2d_kpt_path,
+            right_2d_kpt_path,
+            front_2d_kpt_path,
+        ) = _resolve_required_paths(args, person_id, env_name)
+
+        if not _all_paths_exist(
+            [
+                left_video_path,
+                right_video_path,
+                front_video_path,
+                left_2d_kpt_path,
+                right_2d_kpt_path,
+                front_2d_kpt_path,
+            ]
+        ):
+            msg = f"输入路径不完整"
+            return person_id, env_name, False, msg
+
+        seq_cache_dir = out_dir / person_id / env_name / "_sequence_cache"
+        fused_seq_path = _build_sequence_npy(
+            env_data["fused"], seq_cache_dir / "fused_sequence.npy"
+        )
+        smoothed_seq_path = _build_sequence_npy(
+            env_data["smoothed"], seq_cache_dir / "smoothed_sequence.npy"
+        )
+
+        run_visualization(
+            person_info=OnePersonInfo(
+                person_name=person_id,
+                env_name=env_name,
+                left_video_path=left_video_path,
+                right_video_path=right_video_path,
+                front_video_path=front_video_path,
+                left_2d_kpt_path=left_2d_kpt_path,
+                right_2d_kpt_path=right_2d_kpt_path,
+                front_2d_kpt_path=front_2d_kpt_path,
+                fused_3d_kpt_path=fused_seq_path,
+                fused_smoothed_3d_kpt_path=smoothed_seq_path,
+            ),
+            out_dir=out_dir / person_id / env_name,
+        )
+        msg = f"✅ {person_id}/{env_name} 完成"
+        return person_id, env_name, True, msg
+    except Exception as e:
+        msg = f"❌ {person_id}/{env_name} 失败: {str(e)}"
+        return person_id, env_name, False, msg
 
 
 def find_head3d_fuse_results(
@@ -206,7 +294,8 @@ if __name__ == "__main__":
         logger.error(f"未在 {head3d_dir} 中找到数据")
         exit(1)
 
-    # 显示找到的数据
+    # 显示找到的数据并收集任务
+    tasks = []
     for person_id in sorted(head3d_results.keys()):
         logger.info(f"Person {person_id}:")
         for env_name in sorted(head3d_results[person_id].keys()):
@@ -214,56 +303,34 @@ if __name__ == "__main__":
             fused_count = len(env_data["fused"])
             smoothed_count = len(env_data["smoothed"])
             logger.info(f"  {env_name}: {fused_count} 融合, {smoothed_count} 平滑")
+            tasks.append((person_id, env_name, env_data))
 
-            if not env_data["fused"] or not env_data["smoothed"]:
-                logger.warning("缺少 fused/smoothed 数据，跳过 %s/%s", person_id, env_name)
-                continue
+    if not tasks:
+        logger.warning("没有找到要处理的 env")
+        logger.info(f"输出目录: {out_dir}")
+        exit(0)
 
-            (
-                left_video_path,
-                right_video_path,
-                front_video_path,
-                left_2d_kpt_path,
-                right_2d_kpt_path,
-                front_2d_kpt_path,
-            ) = _resolve_required_paths(args, person_id, env_name)
+    # 多线程处理所有 env
+    logger.info(f"\n开始多线程处理 {len(tasks)} 个 env，工作数={args.num_workers}\n")
+    completed = 0
+    failed = 0
 
-            if not _all_paths_exist(
-                [
-                    left_video_path,
-                    right_video_path,
-                    front_video_path,
-                    left_2d_kpt_path,
-                    right_2d_kpt_path,
-                    front_2d_kpt_path,
-                ]
-            ):
-                continue
+    with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+        futures = {
+            executor.submit(
+                _process_single_env, args, person_id, env_name, env_data, out_dir
+            ): (person_id, env_name)
+            for person_id, env_name, env_data in tasks
+        }
 
-            # 输入是按帧 npy，先堆叠成序列 npy 再交给 run_visualization
-            seq_cache_dir = out_dir / person_id / env_name / "_sequence_cache"
-            fused_seq_path = _build_sequence_npy(
-                env_data["fused"], seq_cache_dir / "fused_sequence.npy"
-            )
-            smoothed_seq_path = _build_sequence_npy(
-                env_data["smoothed"], seq_cache_dir / "smoothed_sequence.npy"
-            )
+        for future in as_completed(futures):
+            person_id, env_name, success, message = future.result()
+            if success:
+                logger.info(message)
+                completed += 1
+            else:
+                logger.warning(message)
+                failed += 1
 
-            run_visualization(
-                person_info=OnePersonInfo(
-                    person_name=person_id,
-                    env_name=env_name,
-                    left_video_path=left_video_path,
-                    right_video_path=right_video_path,
-                    front_video_path=front_video_path,
-                    left_2d_kpt_path=left_2d_kpt_path,
-                    right_2d_kpt_path=right_2d_kpt_path,
-                    front_2d_kpt_path=front_2d_kpt_path,
-                    fused_3d_kpt_path=fused_seq_path,
-                    fused_smoothed_3d_kpt_path=smoothed_seq_path,
-                ),
-                out_dir=out_dir / person_id / env_name,
-            )
-
-    logger.info("✅ 所有可视化已完成！")
+    logger.info(f"\n✅ 完成: {completed} 成功, {failed} 失败")
     logger.info(f"输出目录: {out_dir}")

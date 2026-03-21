@@ -23,16 +23,14 @@ Date      	By	Comments
 import logging
 from pathlib import Path
 
-import imageio
-import imageio.v2 as imageio
+import cv2
 import numpy as np
-from PIL import Image  # 用来 resize，不用 cv2
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
 def _ensure_rgb_uint8(img: np.ndarray) -> np.ndarray:
-    """把任意 imageio 读出的图像变成 (H, W, 3) uint8"""
+    """把任意读出的图像变成 (H, W, 3) uint8"""
     if img is None:
         raise ValueError("Got None image")
 
@@ -76,32 +74,27 @@ def merge_frame_to_video(save_path: Path, flag: str, fps: int = 30) -> None:
     output_file = out_path / f"{flag}.mp4"
 
     # 先读一帧，确定尺寸
-    first_img = imageio.imread(frames[0])
+    first_img = cv2.imread(str(frames[0]), cv2.IMREAD_UNCHANGED)
     first_img = _ensure_rgb_uint8(first_img)
     H, W = first_img.shape[:2]
 
-    # 强制用 FFMPEG 后端，指定 codec
-    writer = imageio.get_writer(
-        output_file,
-        fps=fps,
-        format="FFMPEG",
-        codec="libx264",  # 如果报错可以换 "mpeg4"
-    )
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_file), fourcc, fps, (W, H))
+    if not writer.isOpened():
+        raise RuntimeError(f"Failed to open video writer for {output_file}")
 
     # 先写入第一帧
-    writer.append_data(first_img)
+    writer.write(first_img)
 
     for f in tqdm(frames[1:], desc=f"Save {flag}"):
-        img = imageio.imread(f)
+        img = cv2.imread(str(f), cv2.IMREAD_UNCHANGED)
         img = _ensure_rgb_uint8(img)
 
         # 如果尺寸不一致，resize 到第一帧大小
         if img.shape[0] != H or img.shape[1] != W:
-            img_pil = Image.fromarray(img)
-            img_pil = img_pil.resize((W, H), Image.BILINEAR)
-            img = np.asarray(img_pil)
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
 
-        writer.append_data(img)
+        writer.write(img)
 
-    writer.close()
+    writer.release()
     print(f"Video saved to {output_file}")
