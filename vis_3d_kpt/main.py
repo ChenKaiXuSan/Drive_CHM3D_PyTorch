@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 import resource
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from vis_3d_kpt.load import OnePersonInfo, np
@@ -199,33 +200,57 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=1,
-        help="多线程工作数量，精确到 env 级别",
+        default=0,
+        help="并行工作数量，0 表示自动使用全部 CPU 核数",
+    )
+    parser.add_argument(
+        "--executor",
+        type=str,
+        choices=["thread", "process"],
+        default="process",
+        help="并行执行器类型：process 更适合 CPU 密集，thread 更适合 I/O 密集",
+    )
+    parser.add_argument(
+        "--pipeline-mode",
+        type=str,
+        choices=["env", "staged"],
+        default="env",
+        help="并行流水线模式：env=每个任务串行建序列+渲染，staged=先全量建序列再并行渲染",
+    )
+    parser.add_argument(
+        "--prepare-workers",
+        type=int,
+        default=8,
+        help="staged 模式下建序列阶段并行数，默认 8",
+    )
+    parser.add_argument(
+        "--prepare-executor",
+        type=str,
+        choices=["thread", "process"],
+        default="thread",
+        help="staged 模式下建序列执行器类型，默认 thread（通常更适合磁盘 I/O）",
     )
     return parser.parse_args()
 
 
-def _process_single_env(
+def _resolve_num_workers(num_workers: int, task_count: int, cap: int = 16) -> int:
+    cpu_count = os.cpu_count() or 1
+    if num_workers <= 0:
+        num_workers = cpu_count if cap <= 0 else min(cap, cpu_count)
+    return max(1, min(num_workers, task_count))
+
+
+def _prepare_single_env(
     args: argparse.Namespace,
     person_id: str,
     env_name: str,
     env_data: dict,
     out_dir: Path,
-) -> tuple[str, str, bool, str]:
-    """处理单个 env，返回 (person_id, env_name, success, message)。"""
+) -> tuple[str, str, bool, str, dict]:
     try:
-        env_t0 = time.perf_counter()
-        logger.info(
-            "开始处理 env: %s/%s, fused=%d, smoothed=%d",
-            person_id,
-            env_name,
-            len(env_data.get("fused", [])),
-            len(env_data.get("smoothed", [])),
-        )
-
+        prep_t0 = time.perf_counter()
         if not env_data["fused"] or not env_data["smoothed"]:
-            msg = "缺少 fused/smoothed 数据"
-            return person_id, env_name, False, msg
+            return person_id, env_name, False, "缺少 fused/smoothed 数据", {}
 
         (
             left_video_path,
@@ -246,11 +271,9 @@ def _process_single_env(
                 front_2d_kpt_path,
             ]
         ):
-            msg = "输入路径不完整"
-            return person_id, env_name, False, msg
+            return person_id, env_name, False, "输入路径不完整", {}
 
         seq_cache_dir = out_dir / person_id / env_name / "_sequence_cache"
-        logger.info("构建缓存序列目录: %s", str(seq_cache_dir))
         fused_seq_path = _build_sequence_npy(
             env_data["fused"], seq_cache_dir / "fused_sequence.npy"
         )
@@ -258,22 +281,84 @@ def _process_single_env(
             env_data["smoothed"], seq_cache_dir / "smoothed_sequence.npy"
         )
 
-        logger.info("开始渲染可视化: %s/%s", person_id, env_name)
+        payload = {
+            "left_video_path": left_video_path,
+            "right_video_path": right_video_path,
+            "front_video_path": front_video_path,
+            "left_2d_kpt_path": left_2d_kpt_path,
+            "right_2d_kpt_path": right_2d_kpt_path,
+            "front_2d_kpt_path": front_2d_kpt_path,
+            "fused_seq_path": fused_seq_path,
+            "smoothed_seq_path": smoothed_seq_path,
+            "prepare_seconds": time.perf_counter() - prep_t0,
+        }
+        return person_id, env_name, True, "prepare 完成", payload
+    except Exception as e:
+        return person_id, env_name, False, f"prepare 失败: {str(e)}", {}
+
+
+def _render_single_env(
+    person_id: str,
+    env_name: str,
+    prepared: dict,
+    out_dir: Path,
+) -> tuple[str, str, bool, str]:
+    try:
+        render_t0 = time.perf_counter()
         run_visualization(
             person_info=OnePersonInfo(
                 person_name=person_id,
                 env_name=env_name,
-                left_video_path=left_video_path,
-                right_video_path=right_video_path,
-                front_video_path=front_video_path,
-                left_2d_kpt_path=left_2d_kpt_path,
-                right_2d_kpt_path=right_2d_kpt_path,
-                front_2d_kpt_path=front_2d_kpt_path,
-                fused_3d_kpt_path=fused_seq_path,
-                fused_smoothed_3d_kpt_path=smoothed_seq_path,
+                left_video_path=prepared["left_video_path"],
+                right_video_path=prepared["right_video_path"],
+                front_video_path=prepared["front_video_path"],
+                left_2d_kpt_path=prepared["left_2d_kpt_path"],
+                right_2d_kpt_path=prepared["right_2d_kpt_path"],
+                front_2d_kpt_path=prepared["front_2d_kpt_path"],
+                fused_3d_kpt_path=prepared["fused_seq_path"],
+                fused_smoothed_3d_kpt_path=prepared["smoothed_seq_path"],
             ),
             out_dir=out_dir / person_id / env_name,
         )
+        msg = (
+            f"✅ {person_id}/{env_name} 完成, "
+            f"prepare={prepared.get('prepare_seconds', -1):.2f}s, "
+            f"render={time.perf_counter() - render_t0:.2f}s"
+        )
+        return person_id, env_name, True, msg
+    except Exception as e:
+        return person_id, env_name, False, f"❌ {person_id}/{env_name} 渲染失败: {str(e)}"
+
+
+def _process_single_env(
+    args: argparse.Namespace,
+    person_id: str,
+    env_name: str,
+    env_data: dict,
+    out_dir: Path,
+) -> tuple[str, str, bool, str]:
+    """处理单个 env，返回 (person_id, env_name, success, message)。"""
+    try:
+        env_t0 = time.perf_counter()
+        logger.info(
+            "开始处理 env: %s/%s, fused=%d, smoothed=%d",
+            person_id,
+            env_name,
+            len(env_data.get("fused", [])),
+            len(env_data.get("smoothed", [])),
+        )
+        _, _, prep_ok, prep_msg, prepared = _prepare_single_env(
+            args, person_id, env_name, env_data, out_dir
+        )
+        if not prep_ok:
+            return person_id, env_name, False, prep_msg
+
+        _, _, render_ok, render_msg = _render_single_env(
+            person_id, env_name, prepared, out_dir
+        )
+        if not render_ok:
+            return person_id, env_name, False, render_msg
+
         msg = (
             f"✅ {person_id}/{env_name} 完成, "
             f"耗时={time.perf_counter() - env_t0:.2f}s, "
@@ -412,27 +497,114 @@ if __name__ == "__main__":
         logger.info(f"输出目录: {out_dir}")
         exit(0)
 
-    # 多线程处理所有 env
-    logger.info(f"\n开始多线程处理 {len(tasks)} 个 env，工作数={args.num_workers}\n")
     completed = 0
     failed = 0
 
-    with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-        futures = {
-            executor.submit(
-                _process_single_env, args, person_id, env_name, env_data, out_dir
-            ): (person_id, env_name)
-            for person_id, env_name, env_data in tasks
-        }
+    if args.pipeline_mode == "env":
+        worker_count = _resolve_num_workers(args.num_workers, len(tasks), cap=0)
+        executor_cls = (
+            ProcessPoolExecutor if args.executor == "process" else ThreadPoolExecutor
+        )
+        logger.info(
+            "\n开始并行处理 %d 个 env，模式=%s，执行器=%s，工作数=%d\n",
+            len(tasks),
+            args.pipeline_mode,
+            args.executor,
+            worker_count,
+        )
+        with executor_cls(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(
+                    _process_single_env, args, person_id, env_name, env_data, out_dir
+                ): (person_id, env_name)
+                for person_id, env_name, env_data in tasks
+            }
 
-        for future in as_completed(futures):
-            person_id, env_name, success, message = future.result()
-            if success:
-                logger.info(message)
-                completed += 1
-            else:
-                logger.warning(message)
-                failed += 1
+            for future in as_completed(futures):
+                person_id, env_name, success, message = future.result()
+                if success:
+                    logger.info(message)
+                    completed += 1
+                else:
+                    logger.warning(message)
+                    failed += 1
+    else:
+        prepare_t0 = time.perf_counter()
+        prepare_worker_count = _resolve_num_workers(
+            args.prepare_workers, len(tasks), cap=8
+        )
+        prepare_executor_cls = (
+            ProcessPoolExecutor
+            if args.prepare_executor == "process"
+            else ThreadPoolExecutor
+        )
+        logger.info(
+            "\n阶段1/2 prepare：任务=%d，执行器=%s，工作数=%d\n",
+            len(tasks),
+            args.prepare_executor,
+            prepare_worker_count,
+        )
+
+        prepared_items = []
+        with prepare_executor_cls(max_workers=prepare_worker_count) as executor:
+            futures = {
+                executor.submit(
+                    _prepare_single_env, args, person_id, env_name, env_data, out_dir
+                ): (person_id, env_name)
+                for person_id, env_name, env_data in tasks
+            }
+            for future in as_completed(futures):
+                person_id, env_name, success, message, payload = future.result()
+                if success:
+                    prepared_items.append((person_id, env_name, payload))
+                    logger.info("[PREP] %s/%s %s", person_id, env_name, message)
+                else:
+                    failed += 1
+                    logger.warning("[PREP] %s/%s %s", person_id, env_name, message)
+
+        prepare_seconds = time.perf_counter() - prepare_t0
+        if not prepared_items:
+            logger.error("prepare 阶段没有成功任务，提前结束")
+            logger.info(f"输出目录: {out_dir}")
+            exit(1)
+
+        render_t0 = time.perf_counter()
+        render_worker_count = _resolve_num_workers(
+            args.num_workers, len(prepared_items), cap=0
+        )
+        render_executor_cls = (
+            ProcessPoolExecutor if args.executor == "process" else ThreadPoolExecutor
+        )
+        logger.info(
+            "\n阶段2/2 render：任务=%d，执行器=%s，工作数=%d\n",
+            len(prepared_items),
+            args.executor,
+            render_worker_count,
+        )
+        with render_executor_cls(max_workers=render_worker_count) as executor:
+            futures = {
+                executor.submit(
+                    _render_single_env, person_id, env_name, prepared, out_dir
+                ): (person_id, env_name)
+                for person_id, env_name, prepared in prepared_items
+            }
+            for future in as_completed(futures):
+                person_id, env_name, success, message = future.result()
+                if success:
+                    completed += 1
+                    logger.info("[RENDER] %s", message)
+                else:
+                    failed += 1
+                    logger.warning("[RENDER] %s", message)
+
+        render_seconds = time.perf_counter() - render_t0
+        logger.info(
+            "\n流水线耗时统计: prepare=%.2fs, render=%.2fs, prepare吞吐=%.2f env/s, render吞吐=%.2f env/s",
+            prepare_seconds,
+            render_seconds,
+            len(tasks) / max(prepare_seconds, 1e-6),
+            len(prepared_items) / max(render_seconds, 1e-6),
+        )
 
     logger.info(f"\n✅ 完成: {completed} 成功, {failed} 失败")
     logger.info(f"输出目录: {out_dir}")
