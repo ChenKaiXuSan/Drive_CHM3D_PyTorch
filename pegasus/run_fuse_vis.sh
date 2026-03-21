@@ -7,17 +7,12 @@
 #PBS -o logs/pegasus/head3d_fuse_vis_group_${PBS_SUBREQNO}.log
 #PBS -e logs/pegasus/head3d_fuse_vis_group_${PBS_SUBREQNO}_err.log
 
-set -euo pipefail
-
 # === 1. 環境準備 ===
 cd /work/SSR/share/code/Drive_Face_Mesh_PyTorch
 
 mkdir -p logs/pegasus/
-
-# module load intelpython/2022.3.1
-# source ${CONDA_PREFIX}/etc/profile.d/conda.sh
-# conda deactivate
-# conda activate /home/SSR/luoxi/miniconda3/envs/sam_3d_body
+# Activate conda environment
+source "${CONDA_PREFIX}/etc/profile.d/conda.sh"
 conda activate /home/SSR/luoxi/miniconda3/envs/multiview-video-cls
 
 conda env list
@@ -70,7 +65,6 @@ python -m vis_3d_kpt.main \
     --sam3d-results-dir "${SAM3D_RESULTS_PATH}" \
     --out-dir "${VIS_OUT_PATH}" \
     --person-list "${PERSON_ID}" \
-    # --num-workers "${NUM_WORKERS}" \
     --log-dir "${VIS_LOG_DIR}"
 
 echo "🏁 Node ${PBS_SUBREQNO} finished at: $(date)"
