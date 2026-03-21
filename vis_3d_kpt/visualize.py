@@ -2,6 +2,7 @@
 
 import logging
 import gc
+import time
 
 from pathlib import Path
 
@@ -59,6 +60,7 @@ def run_visualization(
     fused_smoothed_3d_kpt = None
 
     try:
+        viz_t0 = time.perf_counter()
         out_dir = out_dir.resolve()
         logger.info(
             "Starting visualization for %s to %s", person_info.person_name, str(out_dir)
@@ -77,47 +79,74 @@ def run_visualization(
 
         skeleton_visualizer, scene_visualizer = setup_visualizer()
 
-        # * pro的左右视频长度不一致，按最短的来
-        frame_count = min(
-            len(left_frames),
-            len(right_frames),
-            len(front_frames),
-            len(left_2d_kpt),
-            len(right_2d_kpt),
-            len(front_2d_kpt),
-            fused_3d_kpt.shape[0],
-            fused_smoothed_3d_kpt.shape[0],
+        frame_stream = zip(
+            left_frames,
+            right_frames,
+            front_frames,
+            left_2d_kpt,
+            right_2d_kpt,
+            front_2d_kpt,
+            fused_3d_kpt,
+            fused_smoothed_3d_kpt,
         )
 
-        for frame_idx in tqdm(range(frame_count), desc="Processing frames"):
+        processed_count = 0
+        for frame_idx, (
+            left_frame,
+            right_frame,
+            front_frame,
+            left_2d,
+            right_2d,
+            front_2d,
+            fused_3d,
+            fused_smoothed_3d,
+        ) in enumerate(tqdm(frame_stream, desc="Processing frames")):
             # if frame_idx > 50:  # 先只处理前50帧，测试用
             #     break
 
             try:
                 process_frame(
-                    left_frames=left_frames[frame_idx],
-                    right_frames=right_frames[frame_idx],
-                    front_frames=front_frames[frame_idx],
-                    left_2d_kpt=left_2d_kpt[frame_idx],
-                    right_2d_kpt=right_2d_kpt[frame_idx],
-                    front_2d_kpt=front_2d_kpt[frame_idx],
-                    fused_3d_kpt=fused_3d_kpt[frame_idx],
-                    fused_smoothed_3d_kpt=fused_smoothed_3d_kpt[frame_idx],
+                    left_frames=left_frame,
+                    right_frames=right_frame,
+                    front_frames=front_frame,
+                    left_2d_kpt=left_2d,
+                    right_2d_kpt=right_2d,
+                    front_2d_kpt=front_2d,
+                    fused_3d_kpt=fused_3d,
+                    fused_smoothed_3d_kpt=fused_smoothed_3d,
                     frame_idx=frame_idx,
                     out_root=out_dir,
                     skeleton_visualizer=skeleton_visualizer,
                     scene_visualizer=scene_visualizer,
                 )
+                processed_count += 1
+                if processed_count % 200 == 0:
+                    elapsed = time.perf_counter() - viz_t0
+                    logger.info(
+                        "可视化进度: %s/%s 已处理 %d 帧, 平均 %.2f 帧/秒",
+                        person_info.person_name,
+                        person_info.env_name,
+                        processed_count,
+                        processed_count / max(elapsed, 1e-6),
+                    )
             except Exception as e:
                 logger.error("Error processing frame %d: %s", frame_idx, e)
                 continue
 
-        logger.info("Visualization completed for %s", person_info.person_name)
+        logger.info(
+            "Visualization completed for %s/%s, processed %d frames, elapsed %.2fs",
+            person_info.person_name,
+            person_info.env_name,
+            processed_count,
+            time.perf_counter() - viz_t0,
+        )
 
         # 合成图片为视频
+        logger.info("开始合成视频: %s", str(out_dir))
         merge_frame_to_video(out_dir, "fused", fps=30)
         merge_frame_to_video(out_dir, "smoothed", fps=30)
         merge_frame_to_video(out_dir, "frame_scene", fps=30)
+        logger.info("视频合成完成: %s", str(out_dir / "video"))
 
     except Exception as e:
         logger.error("Error in visualization: %s", e)

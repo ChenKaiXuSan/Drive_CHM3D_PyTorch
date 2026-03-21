@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import time
+import resource
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -10,6 +12,44 @@ from vis_3d_kpt.load import OnePersonInfo, np
 from vis_3d_kpt.visualize import run_visualization
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging(log_dir: Path) -> tuple[Path, Path]:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    run_id = time.strftime("%Y%m%d_%H%M%S")
+    all_log_path = log_dir / f"run_{run_id}.all.log"
+    error_log_path = log_dir / f"run_{run_id}.error.log"
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers.clear()
+
+    log_format = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(log_format)
+
+    all_file_handler = logging.FileHandler(all_log_path, encoding="utf-8")
+    all_file_handler.setLevel(logging.INFO)
+    all_file_handler.setFormatter(log_format)
+
+    error_file_handler = logging.FileHandler(error_log_path, encoding="utf-8")
+    error_file_handler.setLevel(logging.ERROR)
+    error_file_handler.setFormatter(log_format)
+
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(all_file_handler)
+    root_logger.addHandler(error_file_handler)
+
+    return all_log_path, error_log_path
+
+
+def _get_peak_rss_mb() -> float:
+    # Linux ru_maxrss 单位是 KB
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
 def _load_frame_keypoints(frame_path: Path) -> np.ndarray:
@@ -29,14 +69,49 @@ def _load_frame_keypoints(frame_path: Path) -> np.ndarray:
 
 
 def _build_sequence_npy(frame_files: list[Path], save_path: Path) -> Path:
-    """将按帧保存的 npy 文件堆叠为 (T, N, 3) 序列并落盘。"""
+    """将按帧保存的 npy 文件流式写为 (T, N, 3) 序列并落盘。"""
     if not frame_files:
         raise ValueError("frame_files 为空，无法构建序列")
 
-    frames = [_load_frame_keypoints(fp) for fp in frame_files]
-    seq = np.stack(frames, axis=0)
+    t0 = time.perf_counter()
+    logger.info(
+        "开始构建序列: %s, 帧数=%d",
+        str(save_path),
+        len(frame_files),
+    )
+
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(save_path, seq)
+
+    first = _load_frame_keypoints(frame_files[0])
+    seq_shape = (len(frame_files),) + first.shape
+    seq_dtype = np.float32
+    seq_mmap = np.lib.format.open_memmap(
+        str(save_path),
+        mode="w+",
+        dtype=seq_dtype,
+        shape=seq_shape,
+    )
+    seq_mmap[0] = np.asarray(first, dtype=seq_dtype)
+
+    for idx, fp in enumerate(frame_files[1:], start=1):
+        seq_mmap[idx] = np.asarray(_load_frame_keypoints(fp), dtype=seq_dtype)
+        if idx % 300 == 0:
+            logger.info(
+                "序列构建进度: %s %d/%d",
+                save_path.name,
+                idx + 1,
+                len(frame_files),
+            )
+
+    seq_mmap.flush()
+    del seq_mmap
+    logger.info(
+        "序列构建完成: %s, shape=%s, 耗时=%.2fs, 进程峰值内存=%.1fMB",
+        str(save_path),
+        seq_shape,
+        time.perf_counter() - t0,
+        _get_peak_rss_mb(),
+    )
     return save_path
 
 
@@ -93,8 +168,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/workspace/code/logs/3d_vis_head3d"),
+        default=Path("/workspace/data/fused_3d_vis"),
         help="输出目录，将保留原目录结构",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=Path("/workspace/code/logs/vis_3d_kpt"),
+        help="日志目录，会生成按时间戳命名的 all/error 日志文件",
     )
     parser.add_argument(
         "--person-list",
@@ -118,7 +199,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=4,
+        default=1,
         help="多线程工作数量，精确到 env 级别",
     )
     return parser.parse_args()
@@ -133,8 +214,17 @@ def _process_single_env(
 ) -> tuple[str, str, bool, str]:
     """处理单个 env，返回 (person_id, env_name, success, message)。"""
     try:
+        env_t0 = time.perf_counter()
+        logger.info(
+            "开始处理 env: %s/%s, fused=%d, smoothed=%d",
+            person_id,
+            env_name,
+            len(env_data.get("fused", [])),
+            len(env_data.get("smoothed", [])),
+        )
+
         if not env_data["fused"] or not env_data["smoothed"]:
-            msg = f"缺少 fused/smoothed 数据"
+            msg = "缺少 fused/smoothed 数据"
             return person_id, env_name, False, msg
 
         (
@@ -156,10 +246,11 @@ def _process_single_env(
                 front_2d_kpt_path,
             ]
         ):
-            msg = f"输入路径不完整"
+            msg = "输入路径不完整"
             return person_id, env_name, False, msg
 
         seq_cache_dir = out_dir / person_id / env_name / "_sequence_cache"
+        logger.info("构建缓存序列目录: %s", str(seq_cache_dir))
         fused_seq_path = _build_sequence_npy(
             env_data["fused"], seq_cache_dir / "fused_sequence.npy"
         )
@@ -167,6 +258,7 @@ def _process_single_env(
             env_data["smoothed"], seq_cache_dir / "smoothed_sequence.npy"
         )
 
+        logger.info("开始渲染可视化: %s/%s", person_id, env_name)
         run_visualization(
             person_info=OnePersonInfo(
                 person_name=person_id,
@@ -182,7 +274,11 @@ def _process_single_env(
             ),
             out_dir=out_dir / person_id / env_name,
         )
-        msg = f"✅ {person_id}/{env_name} 完成"
+        msg = (
+            f"✅ {person_id}/{env_name} 完成, "
+            f"耗时={time.perf_counter() - env_t0:.2f}s, "
+            f"峰值内存={_get_peak_rss_mb():.1f}MB"
+        )
         return person_id, env_name, True, msg
     except Exception as e:
         msg = f"❌ {person_id}/{env_name} 失败: {str(e)}"
@@ -259,13 +355,12 @@ def find_head3d_fuse_results(
 
 
 if __name__ == "__main__":
-    # 设置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-
     args = parse_args()
+    all_log_path, error_log_path = _configure_logging(args.log_dir.resolve())
+    logger.info("日志文件(all): %s", str(all_log_path))
+    logger.info("日志文件(error): %s", str(error_log_path))
+
+    main_t0 = time.perf_counter()
     out_dir = args.out_dir.resolve()
     head3d_dir = args.head3d_dir.resolve()
 
@@ -283,6 +378,13 @@ if __name__ == "__main__":
         env_list = [e.strip() for e in args.env_list.split(",")]
 
     # 查找数据
+    logger.info(
+        "开始扫描数据: head3d=%s, video=%s, sam3d=%s, out=%s",
+        str(head3d_dir),
+        str(args.video_dir),
+        str(args.sam3d_results_dir),
+        str(out_dir),
+    )
     head3d_results = find_head3d_fuse_results(
         head3d_dir,
         person_list=person_list,
@@ -334,3 +436,8 @@ if __name__ == "__main__":
 
     logger.info(f"\n✅ 完成: {completed} 成功, {failed} 失败")
     logger.info(f"输出目录: {out_dir}")
+    logger.info(
+        "总耗时=%.2fs, 进程峰值内存=%.1fMB",
+        time.perf_counter() - main_t0,
+        _get_peak_rss_mb(),
+    )

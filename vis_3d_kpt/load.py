@@ -164,25 +164,13 @@ def load_helper(
     np.ndarray, np.ndarray
 ]:
     if memory_efficient:
-        # 内存节省模式：使用生成器和内存映射
-        left_frames = list(
-            load_video_frames(person_info.left_video_path, as_generator=True)
-        )
-        right_frames = list(
-            load_video_frames(person_info.right_video_path, as_generator=True)
-        )
-        front_frames = list(
-            load_video_frames(person_info.front_video_path, as_generator=True)
-        )
-        left_2d_kpt = list(
-            load_2d_keypoints(person_info.left_2d_kpt_path, as_generator=True)
-        )
-        right_2d_kpt = list(
-            load_2d_keypoints(person_info.right_2d_kpt_path, as_generator=True)
-        )
-        front_2d_kpt = list(
-            load_2d_keypoints(person_info.front_2d_kpt_path, as_generator=True)
-        )
+        # 内存节省模式：保持生成器惰性消费，避免一次性加载全量帧
+        left_frames = load_video_frames(person_info.left_video_path, as_generator=True)
+        right_frames = load_video_frames(person_info.right_video_path, as_generator=True)
+        front_frames = load_video_frames(person_info.front_video_path, as_generator=True)
+        left_2d_kpt = load_2d_keypoints(person_info.left_2d_kpt_path, as_generator=True)
+        right_2d_kpt = load_2d_keypoints(person_info.right_2d_kpt_path, as_generator=True)
+        front_2d_kpt = load_2d_keypoints(person_info.front_2d_kpt_path, as_generator=True)
         fused_3d_kpt = load_fused_3d_kpt(
             person_info.fused_3d_kpt_path, use_memmap=True
         )
