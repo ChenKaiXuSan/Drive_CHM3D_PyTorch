@@ -48,6 +48,7 @@ class SkeletonVisualizer:
         keypoints: np.ndarray,
         kpt_thr: float = 0.3,
         show_kpt_idx: bool = False,
+        part_indices: Optional[list] = None,
     ):
         """Draw keypoints and skeletons (optional) of GT or prediction.
 
@@ -58,6 +59,9 @@ class SkeletonVisualizer:
                 to be shown. Default: 0.3.
             show_kpt_idx (bool): Whether to show the index of keypoints.
                 Defaults to ``False``
+            part_indices (Optional[list]): If provided, only draw keypoints
+                at these indices (e.g., [0, 1, 2, 3, 4, 5, 6, 69] for head).
+                Default: ``None`` (draw all keypoints)
 
         Returns:
             np.ndarray: the drawn image which channel is RGB.
@@ -104,6 +108,11 @@ class SkeletonVisualizer:
                     )
 
                 for sk_id, sk in enumerate(self.skeleton):
+                    # Skip links if part_indices is specified and endpoints not in part
+                    if part_indices is not None:
+                        if sk[0] not in part_indices or sk[1] not in part_indices:
+                            continue
+
                     pos1 = (int(kpts[sk[0], 0]), int(kpts[sk[0], 1]))
                     pos2 = (int(kpts[sk[1], 0]), int(kpts[sk[1], 1]))
                     if (
@@ -141,6 +150,10 @@ class SkeletonVisualizer:
 
             # draw each point on image
             for kid, kpt in enumerate(kpts):
+                # Skip keypoint if part_indices is specified and kid not in part
+                if part_indices is not None and kid not in part_indices:
+                    continue
+
                 if score[kid] < kpt_thr or kpt_color[kid] is None:
                     # skip the point that should not be drawn
                     continue
@@ -193,18 +206,20 @@ class SkeletonVisualizer:
         ax: plt.axes,
         points_3d: np.ndarray,
         window_title: str = "3D Skeleton Visualization",
+        part_indices: Optional[list] = None,
     ):
         """
-        使用 Open3D 绘制 3D 关键点和骨架连线。
+        使用 matplotlib 绘制 3D 关键点和骨架连线。
 
         Args:
-            points_3d (np.ndarray): N x 3 形状的
-             NumPy 数组，代表 3D 坐标 (x, y, z)。
-            colors (Optional[np.ndarray]): N x 3 形状的 NumPy 数组，代表每个点的 RGB 颜色 (0.0 到 1.0)。
-            link_colors (Optional[np.ndarray]): M x 3 形状的 NumPy 数组，代表每条连接线的 RGB 颜色 (0.0 到 1.0)。
+            ax (plt.axes): Matplotlib 3D 轴对象（可选）。
+            points_3d (np.ndarray): N x 3 形状的 NumPy 数组，代表 3D 坐标 (x, y, z)。
             window_title (str): 可视化窗口的标题。
+            part_indices (Optional[list]): If provided, only draw keypoints
+                at these indices. Default: ``None`` (draw all keypoints)
         """
         # 1. 初始化 3D 绘图
+        created_fig = None
         if ax is None:
             created_fig = plt.figure(figsize=(10, 10))
             ax = created_fig.add_subplot(111, projection="3d")
@@ -216,39 +231,59 @@ class SkeletonVisualizer:
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
 
+        # Filter points if part_indices is specified
+        if part_indices is not None:
+            points_3d_filtered = points_3d[part_indices]
+            indices_to_draw = part_indices
+        else:
+            points_3d_filtered = points_3d
+            indices_to_draw = list(range(len(points_3d)))
+
         # 确保坐标轴比例一致，避免扭曲
         max_range = (
             np.array(
-                [points_3d[:, i].max() - points_3d[:, i].min() for i in range(3)]
+                [
+                    points_3d_filtered[:, i].max() - points_3d_filtered[:, i].min()
+                    for i in range(3)
+                ]
             ).max()
             / 2.0
         )
-        mid_x = (points_3d[:, 0].max() + points_3d[:, 0].min()) / 2.0
-        mid_y = (points_3d[:, 1].max() + points_3d[:, 1].min()) / 2.0
-        mid_z = (points_3d[:, 2].max() + points_3d[:, 2].min()) / 2.0
+        mid_x = (
+            points_3d_filtered[:, 0].max() + points_3d_filtered[:, 0].min()
+        ) / 2.0
+        mid_y = (
+            points_3d_filtered[:, 1].max() + points_3d_filtered[:, 1].min()
+        ) / 2.0
+        mid_z = (
+            points_3d_filtered[:, 2].max() + points_3d_filtered[:, 2].min()
+        ) / 2.0
 
         ax.set_xlim(mid_x - max_range, mid_x + max_range)
         ax.set_ylim(mid_y - max_range, mid_y + max_range)
         ax.set_zlim(mid_z - max_range, mid_z + max_range)
 
         # 2. 绘制 3D 关键点
-        # Matplotlib 颜色需要是 0.0 到 1.0 的 RGB/RGBA
         raw_kpt_colors_mp = self.kpt_color
         # 关键点颜色转换
         if raw_kpt_colors_mp is not None and not isinstance(raw_kpt_colors_mp, str):
             # 将颜色转换为 NumPy 数组并归一化到 0.0-1.0 范围
             kpt_color = np.array(raw_kpt_colors_mp, dtype=np.float32) / 255.0
+        else:
+            kpt_color = (1.0, 0.0, 0.0)  # Default red
 
         # 连线颜色转换
         raw_link_colors_mp = self.link_color
         if raw_link_colors_mp is not None and not isinstance(raw_link_colors_mp, str):
             link_color = np.array(raw_link_colors_mp, dtype=np.float32) / 255.0
+        else:
+            link_color = (0.0, 0.0, 1.0)  # Default blue
 
         ax.scatter(
-            points_3d[:, 0],
-            points_3d[:, 1],
-            points_3d[:, 2],
-            c=kpt_color,
+            points_3d_filtered[:, 0],
+            points_3d_filtered[:, 1],
+            points_3d_filtered[:, 2],
+            c=[kpt_color],
             marker="o",
             s=self.radius * 10,  # 调整点的大小以便在 3D 中可见
             alpha=self.alpha,
@@ -256,11 +291,11 @@ class SkeletonVisualizer:
 
         # 3. 绘制 3D 骨架连线
         if self.skeleton is not None:
-            link_colors_mp = link_color
-
             for i, (p1_idx, p2_idx) in enumerate(self.skeleton):
-                # 获取连接线的颜色，确保在 0.0-1.0 范围
-                color = link_colors_mp[i % len(link_colors_mp)]  # 循环使用颜色
+                # Skip links if part_indices is specified and endpoints not in part
+                if part_indices is not None:
+                    if p1_idx not in indices_to_draw or p2_idx not in indices_to_draw:
+                        continue
 
                 # 提取两个点的坐标
                 p1 = points_3d[p1_idx]
@@ -271,7 +306,7 @@ class SkeletonVisualizer:
                     [p1[0], p2[0]],
                     [p1[1], p2[1]],
                     [p1[2], p2[2]],
-                    color=color,
+                    color=link_color,
                     linewidth=self.line_width * 2,  # 调整线宽
                     alpha=self.alpha,
                 )
