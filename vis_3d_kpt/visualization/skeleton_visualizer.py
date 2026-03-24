@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import cv2
 import matplotlib.pyplot as plt
@@ -42,13 +42,52 @@ class SkeletonVisualizer:
         self.link_color = parsed_meta.get("skeleton_link_colors", self.link_color)
         self.skeleton = parsed_meta.get("skeleton_links", self.skeleton)
 
+    def _resolve_part_indices(
+        self,
+        part_indices: Optional[List[int]] = None,
+        part_names: Optional[List[str]] = None,
+    ) -> Optional[List[int]]:
+        """Resolve selected keypoints by indices and/or keypoint names."""
+
+        selected: set = set()
+
+        if part_indices is not None:
+            selected.update(int(idx) for idx in part_indices)
+
+        if part_names is not None:
+            keypoint_info = self.pose_meta.get("keypoint_info", {})
+            name_to_idx = {
+                item["name"]: idx
+                for idx, item in keypoint_info.items()
+                if isinstance(item, dict) and "name" in item
+            }
+
+            missing_names = []
+            for name in part_names:
+                if name in name_to_idx:
+                    selected.add(name_to_idx[name])
+                else:
+                    missing_names.append(name)
+
+            if missing_names:
+                raise ValueError(
+                    f"Unknown keypoint names: {missing_names}. "
+                    f"Available names: {list(name_to_idx.keys())}"
+                )
+
+        if not selected:
+            return None
+
+        return sorted(selected)
+
     def draw_skeleton(
         self,
         image: np.ndarray,
         keypoints: np.ndarray,
         kpt_thr: float = 0.3,
         show_kpt_idx: bool = False,
-        part_indices: Optional[list] = None,
+        part_indices: Optional[List[int]] = None,
+        part_names: Optional[List[str]] = None,
     ):
         """Draw keypoints and skeletons (optional) of GT or prediction.
 
@@ -59,8 +98,10 @@ class SkeletonVisualizer:
                 to be shown. Default: 0.3.
             show_kpt_idx (bool): Whether to show the index of keypoints.
                 Defaults to ``False``
-            part_indices (Optional[list]): If provided, only draw keypoints
-                at these indices (e.g., [0, 1, 2, 3, 4, 5, 6, 69] for head).
+            part_indices (Optional[List[int]]): If provided, only draw keypoints
+                at these indices.
+            part_names (Optional[List[str]]): If provided, only draw keypoints
+                whose names are in this list. Names are resolved from pose meta.
                 Default: ``None`` (draw all keypoints)
 
         Returns:
@@ -69,6 +110,8 @@ class SkeletonVisualizer:
 
         image = image.copy()
         img_h, img_w, _ = image.shape
+        resolved_part_indices = self._resolve_part_indices(part_indices, part_names)
+
         if len(keypoints.shape) == 2:
             keypoints = keypoints[None, :, :]
 
@@ -109,8 +152,11 @@ class SkeletonVisualizer:
 
                 for sk_id, sk in enumerate(self.skeleton):
                     # Skip links if part_indices is specified and endpoints not in part
-                    if part_indices is not None:
-                        if sk[0] not in part_indices or sk[1] not in part_indices:
+                    if resolved_part_indices is not None:
+                        if (
+                            sk[0] not in resolved_part_indices
+                            or sk[1] not in resolved_part_indices
+                        ):
                             continue
 
                     pos1 = (int(kpts[sk[0], 0]), int(kpts[sk[0], 1]))
@@ -151,7 +197,7 @@ class SkeletonVisualizer:
             # draw each point on image
             for kid, kpt in enumerate(kpts):
                 # Skip keypoint if part_indices is specified and kid not in part
-                if part_indices is not None and kid not in part_indices:
+                if resolved_part_indices is not None and kid not in resolved_part_indices:
                     continue
 
                 if score[kid] < kpt_thr or kpt_color[kid] is None:
@@ -206,7 +252,8 @@ class SkeletonVisualizer:
         ax: plt.axes,
         points_3d: np.ndarray,
         window_title: str = "3D Skeleton Visualization",
-        part_indices: Optional[list] = None,
+        part_indices: Optional[List[int]] = None,
+        part_names: Optional[List[str]] = None,
     ):
         """
         使用 matplotlib 绘制 3D 关键点和骨架连线。
@@ -215,8 +262,11 @@ class SkeletonVisualizer:
             ax (plt.axes): Matplotlib 3D 轴对象（可选）。
             points_3d (np.ndarray): N x 3 形状的 NumPy 数组，代表 3D 坐标 (x, y, z)。
             window_title (str): 可视化窗口的标题。
-            part_indices (Optional[list]): If provided, only draw keypoints
-                at these indices. Default: ``None`` (draw all keypoints)
+            part_indices (Optional[List[int]]): If provided, only draw keypoints
+                at these indices.
+            part_names (Optional[List[str]]): If provided, only draw keypoints
+                whose names are in this list. Names are resolved from pose meta.
+                Default: ``None`` (draw all keypoints)
         """
         # 1. 初始化 3D 绘图
         created_fig = None
@@ -231,10 +281,12 @@ class SkeletonVisualizer:
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
 
+        resolved_part_indices = self._resolve_part_indices(part_indices, part_names)
+
         # Filter points if part_indices is specified
-        if part_indices is not None:
-            points_3d_filtered = points_3d[part_indices]
-            indices_to_draw = part_indices
+        if resolved_part_indices is not None:
+            points_3d_filtered = points_3d[resolved_part_indices]
+            indices_to_draw = resolved_part_indices
         else:
             points_3d_filtered = points_3d
             indices_to_draw = list(range(len(points_3d)))
@@ -269,21 +321,25 @@ class SkeletonVisualizer:
         if raw_kpt_colors_mp is not None and not isinstance(raw_kpt_colors_mp, str):
             # 将颜色转换为 NumPy 数组并归一化到 0.0-1.0 范围
             kpt_color = np.array(raw_kpt_colors_mp, dtype=np.float32) / 255.0
+            if resolved_part_indices is not None and len(kpt_color) >= len(points_3d):
+                kpt_color = kpt_color[resolved_part_indices]
         else:
             kpt_color = (1.0, 0.0, 0.0)  # Default red
 
-        # 连线颜色转换
+        # 连线颜色转换（支持单色或按边颜色）
         raw_link_colors_mp = self.link_color
         if raw_link_colors_mp is not None and not isinstance(raw_link_colors_mp, str):
-            link_color = np.array(raw_link_colors_mp, dtype=np.float32) / 255.0
+            link_colors = np.array(raw_link_colors_mp, dtype=np.float32) / 255.0
+        elif isinstance(raw_link_colors_mp, str):
+            link_colors = raw_link_colors_mp
         else:
-            link_color = (0.0, 0.0, 1.0)  # Default blue
+            link_colors = (0.0, 0.0, 1.0)  # Default blue
 
         ax.scatter(
             points_3d_filtered[:, 0],
             points_3d_filtered[:, 1],
             points_3d_filtered[:, 2],
-            c=[kpt_color],
+            c=kpt_color,
             marker="o",
             s=self.radius * 10,  # 调整点的大小以便在 3D 中可见
             alpha=self.alpha,
@@ -293,7 +349,7 @@ class SkeletonVisualizer:
         if self.skeleton is not None:
             for i, (p1_idx, p2_idx) in enumerate(self.skeleton):
                 # Skip links if part_indices is specified and endpoints not in part
-                if part_indices is not None:
+                if resolved_part_indices is not None:
                     if p1_idx not in indices_to_draw or p2_idx not in indices_to_draw:
                         continue
 
@@ -301,12 +357,19 @@ class SkeletonVisualizer:
                 p1 = points_3d[p1_idx]
                 p2 = points_3d[p2_idx]
 
+                if isinstance(link_colors, str):
+                    line_color = link_colors
+                elif isinstance(link_colors, tuple):
+                    line_color = link_colors
+                else:
+                    line_color = link_colors[i % len(link_colors)]
+
                 # 绘制连接线
                 ax.plot(
                     [p1[0], p2[0]],
                     [p1[1], p2[1]],
                     [p1[2], p2[2]],
-                    color=link_color,
+                    color=line_color,
                     linewidth=self.line_width * 2,  # 调整线宽
                     alpha=self.alpha,
                 )

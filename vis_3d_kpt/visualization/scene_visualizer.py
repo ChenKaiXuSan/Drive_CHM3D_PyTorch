@@ -26,7 +26,7 @@ Date      	By	Comments
 """
 
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -69,6 +69,126 @@ class SceneVisualizer:
         self.link_color = parsed_meta.get("skeleton_link_colors", self.link_color)
         self.skeleton = parsed_meta.get("skeleton_links", self.skeleton)
 
+    def get_skeleton_edges_with_colors(
+        self,
+    ) -> Tuple[List[Tuple[int, int]], List[Tuple[float, float, float]]]:
+        """Extract skeleton edges and RGB colors in [0, 1] from pose metadata."""
+
+        edges: List[Tuple[int, int]] = []
+        colors: List[Tuple[float, float, float]] = []
+
+        skeleton_info = self.pose_meta.get("skeleton_info")
+        keypoint_info = self.pose_meta.get("keypoint_info")
+
+        if skeleton_info is not None and keypoint_info is not None:
+            name_to_idx = {
+                item["name"]: idx for idx, item in keypoint_info.items() if "name" in item
+            }
+            for _, bone_info in skeleton_info.items():
+                joint1_name, joint2_name = bone_info["link"]
+                if joint1_name in name_to_idx and joint2_name in name_to_idx:
+                    edges.append((name_to_idx[joint1_name], name_to_idx[joint2_name]))
+                    colors.append(tuple(c / 255.0 for c in bone_info["color"]))
+            return edges, colors
+
+        if self.skeleton is not None:
+            edges = [tuple(map(int, link)) for link in self.skeleton]
+
+        raw_link_colors = self.link_color
+        if raw_link_colors is None:
+            colors = [(0.0, 0.0, 1.0)] * len(edges)
+        elif isinstance(raw_link_colors, str):
+            colors = [raw_link_colors] * len(edges)
+        else:
+            normalized = np.asarray(raw_link_colors, dtype=np.float32) / 255.0
+            colors = [tuple(color.tolist()) for color in normalized]
+
+        return edges, colors
+
+    def draw_skeleton_edges(
+        self,
+        ax: plt.axes,
+        keypoints_3d: np.ndarray,
+        edges: Optional[List[Tuple[int, int]]] = None,
+        colors: Optional[List[Tuple[float, float, float]]] = None,
+        part_index_set: Optional[set] = None,
+        linewidth: float = 2.6,
+        alpha: float = 0.85,
+    ):
+        """Draw skeleton edges on a 3D axis."""
+
+        if edges is None or colors is None:
+            edges, colors = self.get_skeleton_edges_with_colors()
+
+        color_count = len(colors)
+        for i, (idx1, idx2) in enumerate(edges):
+            if idx1 >= len(keypoints_3d) or idx2 >= len(keypoints_3d):
+                continue
+            if part_index_set is not None and (
+                idx1 not in part_index_set or idx2 not in part_index_set
+            ):
+                continue
+
+            p1 = keypoints_3d[idx1]
+            p2 = keypoints_3d[idx2]
+            color = colors[i % color_count] if color_count > 0 else "b"
+            ax.plot(
+                [p1[0], p2[0]],
+                [p1[1], p2[1]],
+                [p1[2], p2[2]],
+                color=color,
+                linewidth=linewidth,
+                alpha=alpha,
+            )
+
+    def visualize_3d_skeleton(
+        self,
+        keypoints_3d: np.ndarray,
+        part_indices: Optional[List[int]] = None,
+        title: str = "3D Skeleton Visualization",
+        figsize: Tuple[int, int] = (12, 10),
+    ):
+        """Visualize a single-frame 3D skeleton."""
+
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111, projection="3d")
+
+        if part_indices is not None:
+            keypoints = keypoints_3d[part_indices]
+        else:
+            keypoints = keypoints_3d
+            part_indices = list(range(len(keypoints_3d)))
+
+        self.draw_skeleton_edges(
+            ax=ax,
+            keypoints_3d=keypoints_3d,
+            part_index_set=set(part_indices),
+            linewidth=2.6,
+            alpha=0.85,
+        )
+
+        ax.scatter(
+            keypoints[:, 0],
+            keypoints[:, 1],
+            keypoints[:, 2],
+            c="red",
+            marker="o",
+            s=50,
+            label="Keypoints",
+        )
+
+        for i, (x, y, z) in enumerate(keypoints):
+            ax.text(x, y, z, f"{part_indices[i]}", fontsize=8)
+
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        ax.set_title(title)
+        ax.legend()
+        ax.view_init(elev=20, azim=45)
+
+        return fig, ax
+
     # ---------- 主函数：画人物 + 左右相机 + 视锥体 ----------
     def draw_scene(
         self,
@@ -76,6 +196,7 @@ class SceneVisualizer:
         kpts_world: np.ndarray = np.array([]),
         elev=-30,
         azim=270,
+        part_indices: Optional[List[int]] = None,
     ):
         """
         在给定的 ax 上画 3D 场景；如果 ax 为 None，则自己新建 fig+ax。
@@ -87,46 +208,37 @@ class SceneVisualizer:
             created_fig = plt.figure(figsize=(8, 8))
             ax = created_fig.add_subplot(111, projection="3d")
 
-        # --- 颜色处理 ---
         kpt_color = "r"
         raw_kpt_colors_mp = self.kpt_color
         if raw_kpt_colors_mp is not None and not isinstance(raw_kpt_colors_mp, str):
             kpt_color = np.array(raw_kpt_colors_mp, dtype=np.float32) / 255.0
 
-        link_color = "b"
-        raw_link_colors_mp = self.link_color
-        if raw_link_colors_mp is not None and not isinstance(raw_link_colors_mp, str):
-            link_color = np.array(raw_link_colors_mp, dtype=np.float32) / 255.0
+        if part_indices is not None:
+            keypoints = kpts_world[part_indices]
+            part_index_set = set(part_indices)
+            if not isinstance(kpt_color, str) and len(kpt_color) >= len(kpts_world):
+                kpt_color = kpt_color[part_indices]
+        else:
+            keypoints = kpts_world
+            part_index_set = None
 
-        # --- 1. 人体骨架 ---
+        self.draw_skeleton_edges(
+            ax=ax,
+            keypoints_3d=kpts_world,
+            part_index_set=part_index_set,
+            linewidth=self.line_width * 2,
+            alpha=self.alpha,
+        )
+
         ax.scatter(
-            kpts_world[:, 0],
-            kpts_world[:, 1],
-            kpts_world[:, 2],
+            keypoints[:, 0],
+            keypoints[:, 1],
+            keypoints[:, 2],
             c=kpt_color,
             marker="o",
             s=self.radius * 10,
             alpha=self.alpha,
         )
-
-        if self.skeleton is not None:
-            link_colors_mp = link_color
-            for i, (p1_idx, p2_idx) in enumerate(self.skeleton):
-                p1 = kpts_world[p1_idx]
-                p2 = kpts_world[p2_idx]
-                color = (
-                    link_colors_mp[i % len(link_colors_mp)]
-                    if not isinstance(link_colors_mp, str)
-                    else link_colors_mp
-                )
-                ax.plot(
-                    [p1[0], p2[0]],
-                    [p1[1], p2[1]],
-                    [p1[2], p2[2]],
-                    color=color,
-                    linewidth=self.line_width * 2,
-                    alpha=self.alpha,
-                )
 
         # ax.set_xlim3d(-0.1, 0.1)
         # ax.set_ylim3d(-1.5, 0)
@@ -157,6 +269,7 @@ class SceneVisualizer:
         right_frame: np.ndarray,
         pose_3d: np.ndarray,  # (J,3)
         frame_num: int = 0,
+        part_indices: Optional[List[int]] = None,
     ):
         """
         渲染一个 frame：左图+右图+3D pose，并返回 figure。
@@ -200,6 +313,7 @@ class SceneVisualizer:
             ax=ax_3d_left,
             elev=0,
             azim=0,
+            part_indices=part_indices,
         )
 
         ax_3d_right = fig.add_subplot(gs[1, 1], projection="3d")
@@ -209,6 +323,7 @@ class SceneVisualizer:
             ax=ax_3d_right,
             elev=0,
             azim=-180,
+            part_indices=part_indices,
         )
 
         ax_3d_top_left = fig.add_subplot(gs[1, 2], projection="3d")
@@ -218,6 +333,7 @@ class SceneVisualizer:
             ax=ax_3d_top_left,
             elev=90,
             azim=0,
+            part_indices=part_indices,
         )
 
         ax_3d_top_right = fig.add_subplot(gs[1, 3], projection="3d")
@@ -227,6 +343,7 @@ class SceneVisualizer:
             ax=ax_3d_top_right,
             elev=90,
             azim=-180,
+            part_indices=part_indices,
         )
 
         fig.tight_layout()

@@ -5,6 +5,7 @@ import gc
 import time
 
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from tqdm import tqdm
 import numpy as np
@@ -17,16 +18,44 @@ from .visualization.skeleton_visualizer import SkeletonVisualizer
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VIEWS = [
-    ("front_left", -25, 270),
-    ("front_right", -25, 90),
-    ("top", 85, 270),
-    ("side", 0, 0),
-]
+PART_DRAW_PRESETS: Dict[str, List[str]] = {
+    "head": ["head"],
+    "head_arm_hand": ["head", "left_arm", "right_arm", "left_hand", "right_hand"],
+}
 
-SIMPLE_VIEWS = [
-    ("perspective", -20, 255),
-]
+
+PART_STYLE: Dict[str, Dict] = {
+    "head": {
+        "indices": [0, 1, 2, 3, 4, 5, 6, 69],
+        "point_color": "red",
+        "line_color": "red",
+        "label": "Head (8 pts)",
+    },
+    "left_arm": {
+        "indices": [5, 7, 62],
+        "point_color": "orange",
+        "line_color": "orange",
+        "label": "Left Arm (3 pts)",
+    },
+    "right_arm": {
+        "indices": [6, 8, 41],
+        "point_color": "purple",
+        "line_color": "purple",
+        "label": "Right Arm (3 pts)",
+    },
+    "left_hand": {
+        "indices": list(range(42, 63)),
+        "point_color": "blue",
+        "line_color": "blue",
+        "label": "Left Hand (21 pts)",
+    },
+    "right_hand": {
+        "indices": list(range(21, 42)),
+        "point_color": "green",
+        "line_color": "green",
+        "label": "Right Hand (21 pts)",
+    },
+}
 
 
 def setup_visualizer():
@@ -41,14 +70,36 @@ def setup_visualizer():
     return skeleton_visualizer, scene_visualizer
 
 
+def _resolve_part_indices(part_draw_option: str) -> Optional[List[int]]:
+    """Resolve draw option (head/head_arm_hand) to keypoint indices."""
+
+    selected_parts = PART_DRAW_PRESETS.get(part_draw_option)
+    if selected_parts is None:
+        return None
+
+    indices: set = set()
+    for part_name in selected_parts:
+        style = PART_STYLE.get(part_name)
+        if style is not None:
+            indices.update(style["indices"])
+
+    return sorted(indices) if indices else None
+
+
 def run_visualization(
     person_info: OnePersonInfo,
     out_dir: Path,
+    part_draw_option: str = "head_arm_hand",
 ) -> None:
     """Run visualization using an argparse.Namespace of options.
 
     This function contains the core logic originally in `main()` and is
     safe to import and call from other scripts.
+
+    Args:
+        person_info: 输入的人物信息
+        out_dir: 输出目录
+        part_draw_option: 部分可视化模式，支持 "head" 或 "head_arm_hand"
     """
     left_frames = None
     right_frames = None
@@ -118,6 +169,7 @@ def run_visualization(
                     out_root=out_dir,
                     skeleton_visualizer=skeleton_visualizer,
                     scene_visualizer=scene_visualizer,
+                    part_draw_option=part_draw_option,
                 )
                 processed_count += 1
                 if processed_count % 200 == 0:
@@ -146,6 +198,7 @@ def run_visualization(
         merge_frame_to_video(out_dir, "fused", fps=30)
         merge_frame_to_video(out_dir, "smoothed", fps=30)
         merge_frame_to_video(out_dir, "frame_scene", fps=30)
+        merge_frame_to_video(out_dir, "part_comparison", fps=30)
         logger.info("视频合成完成: %s", str(out_dir / "video"))
 
     except Exception as e:
@@ -189,6 +242,7 @@ def process_frame(
     out_root: Path,
     skeleton_visualizer: SkeletonVisualizer,
     scene_visualizer: SceneVisualizer,
+    part_draw_option: str = "head_arm_hand",
 ) -> None:
     # 转变坐标系（SAM的坐标系是右手系，Z轴向前；我们希望的坐标系是Z轴向上）
     fused_3d_kpt = fused_3d_kpt.copy()
@@ -199,9 +253,15 @@ def process_frame(
     fused_smoothed_3d_kpt[:, [1, 2]] = fused_smoothed_3d_kpt[:, [2, 1]]  # swap Y and Z
     fused_smoothed_3d_kpt[:, 2] *= -1  # invert new Z (old Y) to make it forward-facing
 
+    part_indices = _resolve_part_indices(part_draw_option)
+
     # ---------- 画骨架图 ----------
     # * 时间优化前的
-    _skeleton = skeleton_visualizer.draw_skeleton_3d(ax=None, points_3d=fused_3d_kpt)
+    _skeleton = skeleton_visualizer.draw_skeleton_3d(
+        ax=None,
+        points_3d=fused_3d_kpt,
+        part_indices=part_indices,
+    )
 
     skeleton_visualizer.save(
         image=_skeleton,
@@ -210,7 +270,9 @@ def process_frame(
 
     # * 时间优化后的
     _skeleton_smoothed = skeleton_visualizer.draw_skeleton_3d(
-        ax=None, points_3d=fused_smoothed_3d_kpt
+        ax=None,
+        points_3d=fused_smoothed_3d_kpt,
+        part_indices=part_indices,
     )
 
     skeleton_visualizer.save(
@@ -221,13 +283,13 @@ def process_frame(
     # 画左右frame + 2D骨架
 
     left_kpt_with_frame = skeleton_visualizer.draw_skeleton(
-        image=left_frames, keypoints=left_2d_kpt
+        image=left_frames, keypoints=left_2d_kpt, part_indices=part_indices
     )
     right_kpt_with_frame = skeleton_visualizer.draw_skeleton(
-        image=right_frames, keypoints=right_2d_kpt
+        image=right_frames, keypoints=right_2d_kpt, part_indices=part_indices
     )
     front_kpt_with_frame = skeleton_visualizer.draw_skeleton(
-        image=front_frames, keypoints=front_2d_kpt
+        image=front_frames, keypoints=front_2d_kpt, part_indices=part_indices
     )
 
     _frame_scene = scene_visualizer.draw_frame_with_scene(
@@ -235,9 +297,20 @@ def process_frame(
         left_frame=left_kpt_with_frame,
         right_frame=right_kpt_with_frame,
         pose_3d=fused_smoothed_3d_kpt,
+        part_indices=part_indices,
     )
 
     scene_visualizer.save(
         image=_frame_scene,
         save_path=out_root / "frame_scene" / f"{frame_idx}.png",
+    )
+
+    _part_comparison, _ = scene_visualizer.visualize_3d_skeleton(
+        keypoints_3d=fused_smoothed_3d_kpt,
+        part_indices=part_indices,
+        title=f"Part Comparison - Frame {frame_idx}",
+    )
+    scene_visualizer.save(
+        image=_part_comparison,
+        save_path=out_root / "part_comparison" / f"{frame_idx}.png",
     )

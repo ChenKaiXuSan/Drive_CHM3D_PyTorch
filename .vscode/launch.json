@@ -69,6 +69,7 @@
       "args": [
         // "--person_list=[01]",
         // "--env_list=[夜多い]",
+        "--num-workers=1",
       ]
     }
   ]

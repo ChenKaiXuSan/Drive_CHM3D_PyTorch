@@ -10,7 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from pathlib import Path
 
 from vis_3d_kpt.load import OnePersonInfo, np
-from vis_3d_kpt.visualize import run_visualization
+from vis_3d_kpt.infer import run_visualization
 
 logger = logging.getLogger(__name__)
 
