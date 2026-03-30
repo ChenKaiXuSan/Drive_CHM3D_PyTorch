@@ -65,6 +65,50 @@ ENV_MAPPING = {
 ENV_REVERSE_MAPPING = {value: key for key, value in ENV_MAPPING.items()}
 
 
+def _to_env_jp(env_name: str) -> str:
+    if env_name in ENV_MAPPING:
+        return env_name
+    return ENV_REVERSE_MAPPING.get(env_name, env_name)
+
+
+def _resolve_fused_dir_from_args(
+    base_dir: Path,
+    person_id: str,
+    env_name: str,
+) -> Path:
+    env_jp = _to_env_jp(env_name)
+    return Path(base_dir) / person_id / env_jp / "fused_npz"
+
+
+def _resolve_data_dir_from_args(
+    base_dir: Path,
+    person_id: str,
+    env_name: str,
+    data_type: str,
+) -> Path:
+    env_jp = _to_env_jp(env_name)
+    subdir = "smoothed_fused_npz" if data_type == "smoothed" else "fused_npz"
+    return Path(base_dir) / person_id / env_jp / subdir
+
+
+def _expand_data_types(data_type: str) -> List[str]:
+    if data_type == "both":
+        return ["fused", "smoothed"]
+    return [data_type]
+
+
+def _resolve_single_frame_npy(fused_dir: Path, frame_idx: int) -> Path:
+    candidate = fused_dir / f"frame_{frame_idx:06d}_fused.npy"
+    if candidate.exists():
+        return candidate
+
+    matches = sorted(fused_dir.glob(f"frame_{frame_idx}_fused.npy"))
+    if matches:
+        return matches[0]
+
+    return candidate
+
+
 class HeadPoseAnalyzer:
     """
     头部姿态分析器
@@ -278,7 +322,7 @@ class HeadPoseAnalyzer:
 class BatchHeadPoseAnalyzer:
     """批量头部姿态分析器"""
 
-    def __init__(self, base_dir: Path, output_dir: Path):
+    def __init__(self, base_dir: Path, output_dir: Path, data_type: str = "fused"):
         """
         Args:
             base_dir: head3d_fuse_results 基础目录
@@ -286,6 +330,8 @@ class BatchHeadPoseAnalyzer:
         """
         self.base_dir = Path(base_dir)
         self.output_dir = Path(output_dir)
+        self.data_type = data_type
+        self.data_subdir = "smoothed_fused_npz" if data_type == "smoothed" else "fused_npz"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.csv_dir = self.output_dir / "csv"
@@ -314,7 +360,7 @@ class BatchHeadPoseAnalyzer:
                     continue
 
                 env_name = env_dir.name
-                fused_dir = env_dir / "fused_npz"
+                fused_dir = env_dir / self.data_subdir
 
                 if fused_dir.exists() and any(fused_dir.glob("frame_*_fused.npy")):
                     pairs.append((person_id, env_name, fused_dir))
@@ -633,7 +679,9 @@ def _process_compare_pair(
     args: argparse.Namespace,
 ) -> List[Dict[str, object]]:
     env_jp = ENV_REVERSE_MAPPING.get(env_en, env_en)
-    fused_dir = args.base_dir / person_id / env_jp / "fused_npz"
+    data_subdir = getattr(args, "data_subdir", "fused_npz")
+    data_type = getattr(args, "active_data_type", "fused")
+    fused_dir = args.base_dir / person_id / env_jp / data_subdir
     if not fused_dir.exists():
         logger.warning("Missing fused dir: %s", fused_dir)
         return []
@@ -717,6 +765,7 @@ def _process_compare_pair(
             {
                 "person": person_id,
                 "env": env_en,
+                "data_type": data_type,
                 "annotator": annotator_name,
                 "overall_rate": match_stats[annotator_name]["overall_rate"],
                 "total_labels": match_stats[annotator_name]["total_labels"],
@@ -849,7 +898,28 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     single_parser = subparsers.add_parser("single", help="分析单帧npy文件")
-    single_parser.add_argument("--npy", type=Path, required=True, help="单帧npy文件路径")
+    single_parser.add_argument("--npy", type=Path, default=None, help="单帧npy文件路径")
+    single_parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default="/workspace/data/head3d_fuse_results",
+        help="head3d_fuse_results 基础目录（当不传 --npy 时使用）",
+    )
+    single_parser.add_argument("--person", type=str, default=None, help="person ID，例如 01")
+    single_parser.add_argument(
+        "--env",
+        type=str,
+        default=None,
+        help="环境名，支持 日文(夜多い/夜少ない/昼多い/昼少ない) 或 英文(day_high/day_low/night_high/night_low)",
+    )
+    single_parser.add_argument("--frame", type=int, default=None, help="帧索引，例如 619")
+    single_parser.add_argument(
+        "--data-type",
+        type=str,
+        default="both",
+        choices=["fused", "smoothed", "both"],
+        help="输入数据类型：fused、smoothed 或 both",
+    )
     single_parser.add_argument(
         "--log-level",
         default="INFO",
@@ -858,9 +928,29 @@ def main():
     )
 
     sequence_parser = subparsers.add_parser("sequence", help="分析序列目录")
-    sequence_parser.add_argument("--fused-dir", type=Path, required=True, help="融合npy目录")
+    sequence_parser.add_argument("--fused-dir", type=Path, default=None, help="融合npy目录")
+    sequence_parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default="/workspace/data/head3d_fuse_results",
+        help="head3d_fuse_results 基础目录（当不传 --fused-dir 时使用）",
+    )
+    sequence_parser.add_argument("--person", type=str, default=None, help="person ID，例如 01")
+    sequence_parser.add_argument(
+        "--env",
+        type=str,
+        default=None,
+        help="环境名，支持 日文(夜多い/夜少ない/昼多い/昼少ない) 或 英文(day_high/day_low/night_high/night_low)",
+    )
     sequence_parser.add_argument("--start-frame", type=int, default=None)
     sequence_parser.add_argument("--end-frame", type=int, default=None)
+    sequence_parser.add_argument(
+        "--data-type",
+        type=str,
+        default="both",
+        choices=["fused", "smoothed", "both"],
+        help="输入数据类型：fused、smoothed 或 both",
+    )
     sequence_parser.add_argument(
         "--log-level",
         default="INFO",
@@ -897,6 +987,13 @@ def main():
     )
     batch_parser.add_argument("--no-csv", action="store_true", help="不保存CSV文件")
     batch_parser.add_argument("--no-plot", action="store_true", help="不生成图表")
+    batch_parser.add_argument(
+        "--data-type",
+        type=str,
+        default="both",
+        choices=["fused", "smoothed", "both"],
+        help="输入数据类型：fused、smoothed 或 both",
+    )
     batch_parser.add_argument(
         "--log-level",
         default="INFO",
@@ -948,6 +1045,13 @@ def main():
         help="并行线程数（按person/env处理）",
     )
     compare_parser.add_argument(
+        "--data-type",
+        type=str,
+        default="both",
+        choices=["fused", "smoothed", "both"],
+        help="输入数据类型：fused、smoothed 或 both",
+    )
+    compare_parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -959,30 +1063,92 @@ def main():
 
     if args.command == "single":
         analyzer = HeadPoseAnalyzer()
-        result = analyzer.analyze_head_pose(args.npy)
-        if result:
-            logger.info("单帧分析结果:")
-            logger.info(f"  俯仰角 (Pitch): {result['pitch']:.2f}°")
-            logger.info(f"  偏航角 (Yaw): {result['yaw']:.2f}°")
-            logger.info(f"  翻滚角 (Roll): {result['roll']:.2f}°")
+
+        data_types = _expand_data_types(args.data_type)
+        if args.npy is not None and len(data_types) > 1:
+            logger.warning(
+                "single 模式传入 --npy 时，--data-type=both 无法自动拆分，按单路径执行"
+            )
+            data_types = ["fused"]
+
+        for data_type in data_types:
+            npy_path = args.npy
+            if npy_path is None:
+                if args.person is None or args.env is None or args.frame is None:
+                    logger.error(
+                        "single 模式在不传 --npy 时，需要提供 --person --env --frame"
+                    )
+                    return
+
+                fused_dir = _resolve_data_dir_from_args(
+                    args.base_dir,
+                    args.person,
+                    args.env,
+                    data_type,
+                )
+                if not fused_dir.exists():
+                    logger.error("Data directory does not exist (%s): %s", data_type, fused_dir)
+                    continue
+
+                npy_path = _resolve_single_frame_npy(fused_dir, args.frame)
+                if not npy_path.exists():
+                    logger.error("Frame file not found (%s): %s", data_type, npy_path)
+                    continue
+
+                logger.info("Resolved input npy (%s): %s", data_type, npy_path)
+
+            result = analyzer.analyze_head_pose(npy_path)
+            if result:
+                logger.info("单帧分析结果 (%s):", data_type)
+                logger.info(f"  俯仰角 (Pitch): {result['pitch']:.2f}°")
+                logger.info(f"  偏航角 (Yaw): {result['yaw']:.2f}°")
+                logger.info(f"  翻滚角 (Roll): {result['roll']:.2f}°")
         return
 
     if args.command == "sequence":
         analyzer = HeadPoseAnalyzer()
-        results = analyzer.analyze_sequence(
-            args.fused_dir,
-            start_frame=args.start_frame,
-            end_frame=args.end_frame,
-        )
-        logger.info("\n序列分析结果 (前10帧):")
-        for frame_idx in sorted(results.keys())[:10]:
-            angles = results[frame_idx]
-            logger.info(
-                f"  Frame {frame_idx}: "
-                f"Pitch={angles['pitch']:6.2f}°, "
-                f"Yaw={angles['yaw']:6.2f}°, "
-                f"Roll={angles['roll']:6.2f}°"
+
+        data_types = _expand_data_types(args.data_type)
+        if args.fused_dir is not None and len(data_types) > 1:
+            logger.warning(
+                "sequence 模式传入 --fused-dir 时，--data-type=both 无法自动拆分，按单目录执行"
             )
+            data_types = ["fused"]
+
+        for data_type in data_types:
+            fused_dir = args.fused_dir
+            if fused_dir is None:
+                if args.person is None or args.env is None:
+                    logger.error(
+                        "sequence 模式在不传 --fused-dir 时，需要提供 --person --env"
+                    )
+                    return
+                fused_dir = _resolve_data_dir_from_args(
+                    args.base_dir,
+                    args.person,
+                    args.env,
+                    data_type,
+                )
+
+            if not fused_dir.exists():
+                logger.error("Data directory does not exist (%s): %s", data_type, fused_dir)
+                continue
+
+            logger.info("Using %s directory: %s", data_type, fused_dir)
+            results = analyzer.analyze_sequence(
+                fused_dir,
+                start_frame=args.start_frame,
+                end_frame=args.end_frame,
+            )
+            logger.info("\n序列分析结果 (%s, 前10帧):", data_type)
+            for frame_idx in sorted(results.keys())[:10]:
+                angles = results[frame_idx]
+                logger.info(
+                    f"  Frame {frame_idx}: "
+                    f"Pitch={angles['pitch']:6.2f}°, "
+                    f"Yaw={angles['yaw']:6.2f}°, "
+                    f"Roll={angles['roll']:6.2f}°"
+                )
         return
 
     if args.command == "compare":
@@ -994,10 +1160,6 @@ def main():
             return
 
         env_list = _normalize_env_list(args.envs)
-        summary_output_dirs = _prepare_output_dirs(args.output_dir / "summary")
-        stats_dir = summary_output_dirs["stats"]
-
-        summary_rows = []
 
         if args.persons:
             person_ids = args.persons
@@ -1018,55 +1180,71 @@ def main():
             logger.error("No person/env pairs to process")
             return
 
-        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
-            future_map = {
-                executor.submit(_process_compare_pair, person_id, env_en, args): (person_id, env_en)
-                for person_id, env_en in tasks
-            }
-            for future in as_completed(future_map):
-                person_id, env_en = future_map[future]
-                try:
-                    rows = future.result()
-                    summary_rows.extend(rows)
-                except Exception as exc:
-                    logger.error("Failed %s %s: %s", person_id, env_en, exc)
+        for data_type in _expand_data_types(args.data_type):
+            compare_output_dir = args.output_dir / data_type
+            summary_output_dirs = _prepare_output_dirs(compare_output_dir / "summary")
+            stats_dir = summary_output_dirs["stats"]
+            summary_rows = []
 
-        if summary_rows:
-            summary_csv = stats_dir / "comparison_summary.csv"
-            with summary_csv.open("w", newline="") as handle:
-                writer = csv.DictWriter(
-                    handle,
-                    fieldnames=[
-                        "person",
-                        "env",
-                        "annotator",
-                        "overall_rate",
-                        "total_labels",
-                        "matched_labels",
-                    ],
-                )
-                writer.writeheader()
-                writer.writerows(summary_rows)
+            args.output_dir = compare_output_dir
+            args.data_subdir = "smoothed_fused_npz" if data_type == "smoothed" else "fused_npz"
+            args.active_data_type = data_type
 
-            logger.info("Summary saved to %s", summary_csv)
+            logger.info("Start compare for data_type=%s", data_type)
 
-        logger.info("Comparison outputs saved under %s", args.output_dir)
+            with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+                future_map = {
+                    executor.submit(_process_compare_pair, person_id, env_en, args): (person_id, env_en)
+                    for person_id, env_en in tasks
+                }
+                for future in as_completed(future_map):
+                    person_id, env_en = future_map[future]
+                    try:
+                        rows = future.result()
+                        summary_rows.extend(rows)
+                    except Exception as exc:
+                        logger.error("Failed %s %s (%s): %s", person_id, env_en, data_type, exc)
+
+            if summary_rows:
+                summary_csv = stats_dir / "comparison_summary.csv"
+                with summary_csv.open("w", newline="") as handle:
+                    writer = csv.DictWriter(
+                        handle,
+                        fieldnames=[
+                            "person",
+                            "env",
+                            "data_type",
+                            "annotator",
+                            "overall_rate",
+                            "total_labels",
+                            "matched_labels",
+                        ],
+                    )
+                    writer.writeheader()
+                    writer.writerows(summary_rows)
+
+                logger.info("Summary saved to %s", summary_csv)
+
+            logger.info("Comparison outputs saved under %s", compare_output_dir)
         return
 
     if not args.base_dir.exists():
         logger.error(f"Base directory does not exist: {args.base_dir}")
         return
 
-    batch_analyzer = BatchHeadPoseAnalyzer(
-        base_dir=args.base_dir,
-        output_dir=args.output_dir,
-    )
-    batch_analyzer.run_batch_analysis(
-        person_filter=args.persons,
-        env_filter=args.envs,
-        save_csv=not args.no_csv,
-        save_plot=not args.no_plot,
-    )
+    for data_type in _expand_data_types(args.data_type):
+        batch_output_dir = args.output_dir / data_type
+        batch_analyzer = BatchHeadPoseAnalyzer(
+            base_dir=args.base_dir,
+            output_dir=batch_output_dir,
+            data_type=data_type,
+        )
+        batch_analyzer.run_batch_analysis(
+            person_filter=args.persons,
+            env_filter=args.envs,
+            save_csv=not args.no_csv,
+            save_plot=not args.no_plot,
+        )
 
 
 if __name__ == "__main__":
