@@ -1,5 +1,7 @@
 # head3D_fuse 模块方法总结说明文档
 
+> 详细执行流程文档请参考：HEAD3D_FUSE_PIPELINE_DETAILED.md
+
 ## 1. 总体流程与架构
 
 `head3D_fuse` 实现多视角3D头部关键点融合、时序平滑和可视化。主流程由 `main.py`（多进程调度）和 `infer.py`（单人单环境融合）负责，支持批量处理与高效并行。
