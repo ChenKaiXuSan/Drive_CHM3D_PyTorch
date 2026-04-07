@@ -389,7 +389,7 @@ class HeadPoseAnalyzer:
 
 def build_parser() -> argparse.ArgumentParser:
     """构建命令行参数解析器。"""
-    from .config import DEFAULT_ENV_JP, DEFAULT_PERSON_ID, DEFAULT_THRESHOLD
+    from .config import DEFAULT_THRESHOLD, SAM3D_VIEWS
 
     parser = argparse.ArgumentParser(
         prog="python -m compare_with_human_annotation",
@@ -397,18 +397,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
-    single_parser = subparsers.add_parser("single", help="运行单个人物与环境")
+    single_parser = subparsers.add_parser(
+        "single",
+        help="运行 fused 比较；省略 person/env 时遍历全部",
+    )
     single_parser.add_argument(
         "person_id",
         nargs="?",
-        default=DEFAULT_PERSON_ID,
-        help="人物 ID，默认使用配置值",
+        default=None,
+        help="人物 ID；省略 person_id 和 env_jp 时默认遍历全部（fused）",
     )
     single_parser.add_argument(
         "env_jp",
         nargs="?",
-        default=DEFAULT_ENV_JP,
-        help="环境（日文），默认使用配置值",
+        default=None,
+        help="环境（日文）；省略 person_id 和 env_jp 时默认遍历全部（fused）",
     )
     single_parser.add_argument(
         "--threshold",
@@ -438,11 +441,71 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_THRESHOLD,
         help="匹配阈值（度）",
     )
+
+    single_view_majority_parser = subparsers.add_parser(
+        "single_view_majority",
+        help="单视角比较（多数投票标注）；省略 person/env 时遍历全部",
+    )
+    single_view_majority_parser.add_argument(
+        "person_id",
+        nargs="?",
+        default=None,
+        help="人物 ID；省略 person_id 和 env_jp 时默认遍历全部",
+    )
+    single_view_majority_parser.add_argument(
+        "env_jp",
+        nargs="?",
+        default=None,
+        help="环境（日文）；省略 person_id 和 env_jp 时默认遍历全部",
+    )
+    single_view_majority_parser.add_argument(
+        "--view",
+        type=str,
+        default="all",
+        choices=["all", *SAM3D_VIEWS],
+        help="指定视角（front/left/right）或 all",
+    )
+    single_view_majority_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help="匹配阈值（度）",
+    )
+
+    single_view_by_annotator_parser = subparsers.add_parser(
+        "single_view_by_annotator",
+        help="单视角比较（按标注者）；省略 person/env 时遍历全部",
+    )
+    single_view_by_annotator_parser.add_argument(
+        "person_id",
+        nargs="?",
+        default=None,
+        help="人物 ID；省略 person_id 和 env_jp 时默认遍历全部",
+    )
+    single_view_by_annotator_parser.add_argument(
+        "env_jp",
+        nargs="?",
+        default=None,
+        help="环境（日文）；省略 person_id 和 env_jp 时默认遍历全部",
+    )
+    single_view_by_annotator_parser.add_argument(
+        "--view",
+        type=str,
+        default="all",
+        choices=["all", *SAM3D_VIEWS],
+        help="指定视角（front/left/right）或 all",
+    )
+    single_view_by_annotator_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help="匹配阈值（度）",
+    )
     return parser
 
 
 def main() -> None:
-    """程序入口：需要显式指定运行模式（single/majority/by_annotator）。"""
+    """程序入口：需要显式指定运行模式。"""
     parser = build_parser()
     args = parser.parse_args()
 
@@ -459,11 +522,56 @@ def main() -> None:
         return
 
     if args.mode == "single":
+        from .batch_run import run_batch_comparison
         from .run import run_comparison
+
+        if args.person_id is None and args.env_jp is None:
+            run_batch_comparison(threshold_deg=args.threshold)
+            return
 
         run_comparison(
             person_id=args.person_id,
             env_jp=args.env_jp,
+            threshold=args.threshold,
+        )
+        return
+
+    if args.mode == "single_view_majority":
+        from .run import run_single_view_comparison, run_single_view_comparison_all
+
+        if args.person_id is None and args.env_jp is None:
+            run_single_view_comparison_all(
+                view=args.view,
+                annotation_mode="majority",
+                threshold=args.threshold,
+            )
+            return
+
+        run_single_view_comparison(
+            person_id=args.person_id,
+            env_jp=args.env_jp,
+            view=args.view,
+            annotation_mode="majority",
+            threshold=args.threshold,
+        )
+        return
+
+    if args.mode == "single_view_by_annotator":
+        from .run import run_single_view_comparison, run_single_view_comparison_all
+
+        if args.person_id is None and args.env_jp is None:
+            run_single_view_comparison_all(
+                view=args.view,
+                annotation_mode="by_annotator",
+                threshold=args.threshold,
+            )
+            return
+
+        run_single_view_comparison(
+            person_id=args.person_id,
+            env_jp=args.env_jp,
+            view=args.view,
+            annotation_mode="by_annotator",
             threshold=args.threshold,
         )
         return

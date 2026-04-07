@@ -55,6 +55,22 @@ python -m compare_with_human_annotation all --threshold 15
 python -m compare_with_human_annotation single 01 昼多い --threshold 15
 ```
 
+运行单视角 SAM3D 结果与标注比较（支持 front/left/right/all）：
+
+```bash
+python -m compare_with_human_annotation single_view 01 昼多い --view all --annotation-mode majority --threshold 5
+python -m compare_with_human_annotation single_view 01 昼多い --view all --annotation-mode by_annotator --threshold 5
+```
+
+单视角模式输出路径：
+
+```text
+/workspace/data/compare_with_human_annotation_results/sam3d_views/majority/
+/workspace/data/compare_with_human_annotation_results/sam3d_views/by_annotator/annotator_1/
+/workspace/data/compare_with_human_annotation_results/sam3d_views/by_annotator/annotator_2/
+/workspace/data/compare_with_human_annotation_results/sam3d_views/by_annotator/annotator_3/
+```
+
 多数投票模式的输出会单独写到：
 
 ```text

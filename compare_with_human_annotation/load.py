@@ -204,6 +204,48 @@ def load_fused_keypoints(npy_path: Path) -> Optional[np.ndarray]:
         return None
 
 
+def load_sam3d_keypoints(npz_path: Path) -> Optional[np.ndarray]:
+    """
+    读取单视角 SAM3D 的3D关键点数据。
+
+    Args:
+        npz_path: *_sam3d_body.npz 文件路径
+
+    Returns:
+        形状为 (70, 3) 的3D关键点数组，如果读取失败则返回None
+    """
+    try:
+        data = np.load(npz_path, allow_pickle=True)
+        if "output" not in data.files:
+            logger.error(f"No 'output' found in {npz_path}")
+            return None
+
+        output = data["output"].item()
+        if not isinstance(output, dict):
+            logger.error(f"Unexpected 'output' type in {npz_path}: {type(output)}")
+            return None
+
+        keypoints_3d = output.get("pred_keypoints_3d", None)
+        if keypoints_3d is None:
+            logger.error(f"No 'pred_keypoints_3d' found in {npz_path}")
+            return None
+
+        if keypoints_3d.ndim == 3:
+            keypoints_3d = keypoints_3d[0]
+
+        if keypoints_3d.shape[0] < 70:
+            logger.error(
+                f"Expected at least 70 keypoints in {npz_path}, got {keypoints_3d.shape[0]}"
+            )
+            return None
+
+        return keypoints_3d[:70]
+
+    except Exception as e:
+        logger.error(f"Failed to load SAM3D keypoints from {npz_path}: {e}")
+        return None
+
+
 def load_head_movement_annotations(json_path: Path) -> Dict[str, List[HeadMovementLabel]]:
     """
     从JSON文件加载头部动作标注
