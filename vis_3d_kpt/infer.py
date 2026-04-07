@@ -3,6 +3,7 @@
 import logging
 import gc
 import time
+import random
 
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -130,16 +131,12 @@ def run_visualization(
 
         skeleton_visualizer, scene_visualizer = setup_visualizer()
 
-        frame_stream = zip(
-            left_frames,
-            right_frames,
-            front_frames,
-            left_2d_kpt,
-            right_2d_kpt,
-            front_2d_kpt,
-            fused_3d_kpt,
-            fused_smoothed_3d_kpt,
+        total_frames = len(fused_3d_kpt)
+        sampled_frame_indices = sorted(
+            random.sample(range(total_frames), k=min(20, total_frames))
         )
+        logger.info("随机抽取 %d/%d 帧用于可视化", len(sampled_frame_indices), total_frames)
+        sampled_frame_set = set(sampled_frame_indices)
 
         processed_count = 0
         for frame_idx, (
@@ -151,9 +148,24 @@ def run_visualization(
             front_2d,
             fused_3d,
             fused_smoothed_3d,
-        ) in enumerate(tqdm(frame_stream, desc="Processing frames")):
-            # if frame_idx > 50:  # 先只处理前50帧，测试用
-            #     break
+        ) in enumerate(
+            tqdm(
+                zip(
+                    left_frames,
+                    right_frames,
+                    front_frames,
+                    left_2d_kpt,
+                    right_2d_kpt,
+                    front_2d_kpt,
+                    fused_3d_kpt,
+                    fused_smoothed_3d_kpt,
+                ),
+                total=total_frames,
+                desc="Scanning frames",
+            )
+        ):
+            if frame_idx not in sampled_frame_set:
+                continue
 
             try:
                 process_frame(

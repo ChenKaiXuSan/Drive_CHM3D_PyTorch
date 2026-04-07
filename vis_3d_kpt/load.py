@@ -95,9 +95,12 @@ def load_2d_keypoints(file_path: Path, as_generator: bool = False):
         kpts_2d = _extract_pred_keypoints_2d_from_npz(loaded)
 
         if as_generator:
-            yield kpts_2d
-        else:
-            return np.asarray([kpts_2d], dtype=np.float64)
+            def _single_item_generator():
+                yield kpts_2d
+
+            return _single_item_generator()
+
+        return np.asarray([kpts_2d], dtype=np.float64)
 
     elif file_path.is_dir():
         npz_files = sorted(list(file_path.rglob("*.npz")))
@@ -105,24 +108,22 @@ def load_2d_keypoints(file_path: Path, as_generator: bool = False):
             raise FileNotFoundError(f"目录 {file_path} 中未找到 .npz 文件")
 
         if as_generator:
-            # 返回生成器，逐文件yield
-            for npz_file in npz_files:
-                loaded = np.load(npz_file, allow_pickle=True)
-                yield _extract_pred_keypoints_2d_from_npz(loaded)
-        else:
-            res_list = []
-            for npz_file in npz_files:
-                loaded = np.load(npz_file, allow_pickle=True)
-                kpts_2d = _extract_pred_keypoints_2d_from_npz(loaded)
-                res_list.append(kpts_2d)
-            return np.asarray(res_list, dtype=np.float64)
+            def _directory_generator():
+                for npz_file in npz_files:
+                    loaded = np.load(npz_file, allow_pickle=True)
+                    yield _extract_pred_keypoints_2d_from_npz(loaded)
+
+            return _directory_generator()
+
+        res_list = []
+        for npz_file in npz_files:
+            loaded = np.load(npz_file, allow_pickle=True)
+            kpts_2d = _extract_pred_keypoints_2d_from_npz(loaded)
+            res_list.append(kpts_2d)
+        return np.asarray(res_list, dtype=np.float64)
 
     else:
         raise ValueError(f"无法处理的文件路径: {file_path}")
-
-    # 清理内存
-    if 'loaded' in locals():
-        del loaded
 
 
 def load_video_frames(video_path: Path, as_generator: bool = False):
@@ -133,26 +134,29 @@ def load_video_frames(video_path: Path, as_generator: bool = False):
 
     if as_generator:
         # 返回生成器，逐帧yield，节省内存
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                yield frame_rgb
-        finally:
-            cap.release()
-    else:
-        # 原有行为，一次性加载所有帧
-        frames = []
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frames.append(frame_rgb)
-        cap.release()
-        return np.asarray(frames, dtype=np.uint8)
+        def _frame_generator():
+            try:
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    yield frame_rgb
+            finally:
+                cap.release()
+
+        return _frame_generator()
+
+    # 原有行为，一次性加载所有帧
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame_rgb)
+    cap.release()
+    return np.asarray(frames, dtype=np.uint8)
 
 
 def load_helper(

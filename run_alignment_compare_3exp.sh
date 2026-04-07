@@ -17,9 +17,8 @@ set -euo pipefail
 
 cd /workspace/code
 
-RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
-BASE_OUT="${BASE_OUT:-/workspace/data/head3d_fuse_results_align_cmp/${RUN_ID}}"
-BASE_LOG="${BASE_LOG:-/workspace/code/logs/head3d_fuse_align_cmp/${RUN_ID}}"
+BASE_OUT="${BASE_OUT:-/workspace/data/head3d_fuse_results_align_cmp}"
+BASE_LOG="${BASE_LOG:-/workspace/code/logs/head3d_fuse_align_cmp}"
 PYTHON_BIN="${PYTHON_BIN:-/opt/conda/envs/sam_3d_body/bin/python}"
 
 # Customize these as needed
@@ -88,12 +87,12 @@ launch_exp "none"
 # 2) Standard Procrustes
 launch_exp "procrustes" \
   "fuse.alignment_reference=front" \
-  "fuse.alignment_scale=true"
+  "fuse.alignment_scale=false"
 
 # 3) Robust Procrustes (trimmed)
 launch_exp "procrustes_trimmed" \
   "fuse.alignment_reference=front" \
-  "fuse.alignment_scale=true" \
+  "fuse.alignment_scale=false" \
   "fuse.alignment_trim_ratio=0.2" \
   "fuse.alignment_max_iters=3"
 
@@ -102,15 +101,15 @@ launch_exp "procrustes_trimmed" \
 #      front: R=[[-1,0,0],[0,0,-1],[0,-1,0]],             t=[0,1.5,0.62]
 #      left:  R=[[-0.91129,-0.411765,0],[0,0,-1],[0.411765,-0.91129,0]], t=[0,1.5,0.85]
 #      right: R=[[-0.91129, 0.411765,0],[0,0,-1],[-0.411765,-0.91129,0]], t=[0,1.5,0.85]
-launch_exp "extrinsics" \
-  "fuse.alignment_method=none" \
-  "fuse.transform_mode=world_to_camera" \
-  "fuse.view_transforms.front.R=[[-1.0,0.0,0.0],[0.0,0.0,-1.0],[0.0,-1.0,0.0]]" \
-  "fuse.view_transforms.front.t_wc=[0.0,1.5,0.62]" \
-  "fuse.view_transforms.left.R=[[-0.91129,-0.411765,0.0],[0.0,0.0,-1.0],[0.411765,-0.91129,0.0]]" \
-  "fuse.view_transforms.left.t_wc=[0.0,1.5,0.85]" \
-  "fuse.view_transforms.right.R=[[-0.91129,0.411765,0.0],[0.0,0.0,-1.0],[-0.411765,-0.91129,0.0]]" \
-  "fuse.view_transforms.right.t_wc=[0.0,1.5,0.85]"
+# launch_exp "extrinsics" \
+#   "fuse.alignment_method=none" \
+#   "fuse.transform_mode=world_to_camera" \
+#   "fuse.view_transforms.front.R=[[-1.0,0.0,0.0],[0.0,0.0,-1.0],[0.0,-1.0,0.0]]" \
+#   "fuse.view_transforms.front.t_wc=[0.0,1.5,0.62]" \
+#   "fuse.view_transforms.left.R=[[-0.91129,-0.411765,0.0],[0.0,0.0,-1.0],[0.411765,-0.91129,0.0]]" \
+#   "fuse.view_transforms.left.t_wc=[0.0,1.5,0.85]" \
+#   "fuse.view_transforms.right.R=[[-0.91129,0.411765,0.0],[0.0,0.0,-1.0],[-0.411765,-0.91129,0.0]]" \
+#   "fuse.view_transforms.right.t_wc=[0.0,1.5,0.85]"
 
 echo ""
 echo "Waiting for ${#PIDS[@]} experiment(s) to finish..."
