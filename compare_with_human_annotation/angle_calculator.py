@@ -139,7 +139,7 @@ def _build_head_axes(
 
 def calculate_head_angles(
     head_kpts: Dict[str, np.ndarray],
-) -> Tuple[float, float, float]:
+) -> Tuple[float, float]:
     """
     计算头部的三个转动角度
 
@@ -147,15 +147,14 @@ def calculate_head_angles(
         head_kpts: 包含头部关键点的字典
 
     Returns:
-        (pitch, yaw, roll) 三个角度，单位为度
+        (pitch, yaw) 两个角度，单位为度
         - pitch: 俯仰角（上下点头），正值表示抬头，负值表示低头
         - yaw: 偏航角（左右转头），正值表示向右转，负值表示向左转
-        - roll: 翻滚角（左右倾斜），正值表示向右倾斜，负值表示向左倾斜
     """
     axes = _build_head_axes(head_kpts)
     if axes is None:
         logger.warning("Failed to build head coordinate system")
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0
 
     x_axis, y_axis, z_axis = axes
 
@@ -169,12 +168,7 @@ def calculate_head_angles(
     yaw = np.arctan2(z_axis[0], -z_axis[2])
     yaw_deg = np.degrees(yaw)
 
-    # ===== 3. 计算Roll（翻滚角）=====
-    # Use the head left-right axis tilt in the image plane.
-    roll = np.arctan2(x_axis[1], x_axis[0])
-    roll_deg = np.degrees(roll)
-
-    return pitch_deg, yaw_deg, roll_deg
+    return pitch_deg, yaw_deg
 
 
 def direction_match(angle_value: float, expected_dir: int, threshold: float) -> bool:

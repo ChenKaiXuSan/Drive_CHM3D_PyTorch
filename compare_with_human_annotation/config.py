@@ -12,7 +12,7 @@ from pathlib import Path
 DATA_ROOT = Path("/workspace/data")
 
 # 融合关键点数据路径
-FUSED_NPZ_ROOT = DATA_ROOT / "head3d_fuse_results"
+FUSED_NPZ_ROOT = DATA_ROOT / "head3d_fuse_results_old"
 
 # 单视角 SAM3D 结果路径
 SAM3D_BODY_RESULTS_ROOT = DATA_ROOT / "sam3d_body_results_right_full"
@@ -51,7 +51,7 @@ DEFAULT_START_FRAME = None  # None 表示从头开始
 DEFAULT_END_FRAME = None  # None 表示到结尾
 
 # 默认的匹配阈值（度）
-DEFAULT_THRESHOLD = 5.0
+DEFAULT_THRESHOLD = 50.0
 
 # 支持的环境
 ENVIRONMENTS = {

@@ -150,7 +150,7 @@ def run_comparison(
         )
         print(
             f"  平均 front angles: Pitch={mean_angles['pitch']:.2f}°, "
-            f"Yaw={mean_angles['yaw']:.2f}°, Roll={mean_angles['roll']:.2f}°"
+            f"Yaw={mean_angles['yaw']:.2f}°"
         )
     
     # 分析并比较
@@ -235,7 +235,7 @@ def _estimate_front_baseline_from_angles(
         if angles is None:
             continue
         score = analyzer._front_score(
-            (angles["pitch"], angles["yaw"], angles["roll"])
+            (angles["pitch"], angles["yaw"])
         )
         candidates.append((score, frame_idx, angles))
 
@@ -252,7 +252,6 @@ def _estimate_front_baseline_from_angles(
 
     mean_pitch = float(np.mean([item[2]["pitch"] for item in selected]))
     mean_yaw = float(np.mean([item[2]["yaw"] for item in selected]))
-    mean_roll = float(np.mean([item[2]["roll"] for item in selected]))
 
     return {
         "video_id": video_id,
@@ -263,7 +262,6 @@ def _estimate_front_baseline_from_angles(
         "mean_angles": {
             "pitch": mean_pitch,
             "yaw": mean_yaw,
-            "roll": mean_roll,
         },
     }
 
@@ -424,11 +422,10 @@ def run_single_view_comparison(
                 if head_kpts is None:
                     continue
 
-                pitch, yaw, roll = calculate_head_angles(head_kpts)
+                pitch, yaw = calculate_head_angles(head_kpts)
                 angles_by_frame[frame_idx] = {
                     "pitch": float(pitch),
                     "yaw": float(yaw),
-                    "roll": float(roll),
                 }
 
             front_baseline = _estimate_front_baseline_from_angles(

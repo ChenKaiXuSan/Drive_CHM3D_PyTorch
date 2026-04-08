@@ -210,14 +210,12 @@ def generate_paper_report(
         if baseline_rows:
             baseline_pitch = [r["front_baseline"]["mean_angles"]["pitch"] for r in baseline_rows]
             baseline_yaw = [r["front_baseline"]["mean_angles"]["yaw"] for r in baseline_rows]
-            baseline_roll = [r["front_baseline"]["mean_angles"]["roll"] for r in baseline_rows]
             selected_counts = [r["front_baseline"]["frame_count"] for r in baseline_rows]
 
             f.write(f"可用 baseline 数量：{len(baseline_rows)} / {len(all_results)}\n")
             f.write(
                 f"平均 baseline angles：Pitch={sum(baseline_pitch)/len(baseline_pitch):.2f}°, "
-                f"Yaw={sum(baseline_yaw)/len(baseline_yaw):.2f}°, "
-                f"Roll={sum(baseline_roll)/len(baseline_roll):.2f}°\n"
+                f"Yaw={sum(baseline_yaw)/len(baseline_yaw):.2f}°\n"
             )
             f.write(
                 f"baseline 选帧数范围：{min(selected_counts)} ~ {max(selected_counts)}\n"

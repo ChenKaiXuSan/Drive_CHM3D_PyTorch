@@ -431,6 +431,82 @@ def _normalize_keypoints(keypoints: Optional[np.ndarray]) -> np.ndarray:
     return filtered_keypoints
 
 
+def _filter_keypoints_sequence(keypoints_seq: np.ndarray) -> np.ndarray:
+    """过滤时序关键点，输出统一为 (T, M, 3)。"""
+    seq = np.asarray(keypoints_seq)
+    if seq.ndim != 3 or seq.shape[-1] < 3:
+        raise ValueError(
+            f"Expected keypoints sequence shape (T, N, 3), got {seq.shape}"
+        )
+    return np.stack([_normalize_keypoints(frame) for frame in seq], axis=0)
+
+
+def _resolve_filtered_keypoint_indices(
+    requested_indices: Optional[list],
+    filtered_num_points: int,
+    context_name: str,
+) -> list:
+    """将配置中的关键点索引解析为过滤后数组中的索引。"""
+    if filtered_num_points <= 0:
+        return []
+
+    if requested_indices is None:
+        return list(range(min(7, filtered_num_points)))
+
+    keep_to_filtered = {
+        original_idx: filtered_idx
+        for filtered_idx, original_idx in enumerate(KEEP_KEYPOINT_INDICES)
+    }
+    resolved = []
+    seen = set()
+
+    for idx in requested_indices:
+        if not isinstance(idx, (int, np.integer)):
+            logger.warning(
+                "Ignored non-integer keypoint index in %s: %s", context_name, idx
+            )
+            continue
+
+        idx_int = int(idx)
+
+        # 兼容已是过滤后索引的配置
+        if 0 <= idx_int < filtered_num_points:
+            mapped_idx = idx_int
+        # 兼容仍使用原始关键点索引的配置（映射到过滤后位置）
+        elif idx_int in keep_to_filtered:
+            mapped_idx = keep_to_filtered[idx_int]
+            if mapped_idx >= filtered_num_points:
+                logger.warning(
+                    "Ignored keypoint index %s in %s after mapping (mapped=%s, max=%s)",
+                    idx_int,
+                    context_name,
+                    mapped_idx,
+                    filtered_num_points - 1,
+                )
+                continue
+        else:
+            logger.warning(
+                "Ignored keypoint index %s in %s (not present in filtered keypoints)",
+                idx_int,
+                context_name,
+            )
+            continue
+
+        if mapped_idx not in seen:
+            seen.add(mapped_idx)
+            resolved.append(mapped_idx)
+
+    if not resolved:
+        logger.warning(
+            "No valid keypoint indices resolved in %s; fallback to first %d filtered keypoints",
+            context_name,
+            min(7, filtered_num_points),
+        )
+        return list(range(min(7, filtered_num_points)))
+
+    return resolved
+
+
 # =====================================================================
 # Comparison 处理函数
 # =====================================================================
@@ -466,11 +542,20 @@ def _compare_fused_smoothed_keypoints(
     logger.info("=" * 70)
 
     try:
+        # 统一比较为过滤后的关键点
+        filtered_keypoints_array = _filter_keypoints_sequence(keypoints_array)
+        filtered_smoothed_array = _filter_keypoints_sequence(smoothed_array)
+
         # 创建比较器
-        comparator = KeypointsComparator(keypoints_array, smoothed_array)
+        comparator = KeypointsComparator(filtered_keypoints_array, filtered_smoothed_array)
 
         # 获取要评估的关键点索引
-        keypoint_indices = cfg.smooth.get("comparison_keypoint_indices", list(range(7)))
+        requested_indices = cfg.smooth.get("comparison_keypoint_indices")
+        keypoint_indices = _resolve_filtered_keypoint_indices(
+            requested_indices=requested_indices,
+            filtered_num_points=filtered_keypoints_array.shape[1],
+            context_name="smooth.comparison_keypoint_indices",
+        )
 
         # 计算所有指标（按索引过滤）
         metrics = comparator.compute_metrics(keypoint_indices=keypoint_indices)
@@ -567,8 +652,10 @@ def _compare_fused_with_views(
         # 1. 准备数据：将字典转换为numpy数组
         sorted_frames = sorted(all_fused_kpts.keys())
         
-        # 融合后的关键点 (T, N, 3)
-        fused_array = np.stack([all_fused_kpts[idx] for idx in sorted_frames], axis=0)
+        # 融合后的关键点 (T, M, 3) - 使用过滤后关键点
+        fused_array = _filter_keypoints_sequence(
+            np.stack([all_fused_kpts[idx] for idx in sorted_frames], axis=0)
+        )
         logger.info(f"Fused keypoints shape: {fused_array.shape}")
         
         # 各视角的关键点
@@ -581,15 +668,16 @@ def _compare_fused_with_views(
                     logger.warning(f"Missing outputs for frame {frame_idx}, view {view}")
                     continue
                 
-                # 获取该视角的pred_keypoints_3d
-                kpts_3d = frame_outputs[view].get("pred_keypoints_3d")
+                # 优先使用过滤后的关键点；若缺失则从原始关键点现算过滤
+                kpts_3d = frame_outputs[view].get("filtered_pred_keypoints_3d")
                 if kpts_3d is None:
-                    logger.warning(f"Missing pred_keypoints_3d for frame {frame_idx}, view {view}")
+                    kpts_3d = _normalize_keypoints(frame_outputs[view].get("pred_keypoints_3d"))
+
+                if kpts_3d is None:
+                    logger.warning(
+                        f"Missing filtered 3D keypoints for frame {frame_idx}, view {view}"
+                    )
                     continue
-                
-                # 处理可能的batch维度
-                if kpts_3d.ndim == 3 and kpts_3d.shape[0] >= 1:
-                    kpts_3d = kpts_3d[0]
                 
                 view_kpts_list.append(kpts_3d)
             
@@ -607,8 +695,13 @@ def _compare_fused_with_views(
         comparator = FusedViewComparator(fused_array, view_keypoints)
         
         # 3. 获取要评估的关键点索引
-        keypoint_indices = cfg.fuse.get(
-            "fused_view_comparison_keypoint_indices", list(range(7))
+        requested_indices = cfg.fuse.get(
+            "fused_view_comparison_keypoint_indices"
+        )
+        keypoint_indices = _resolve_filtered_keypoint_indices(
+            requested_indices=requested_indices,
+            filtered_num_points=fused_array.shape[1],
+            context_name="fuse.fused_view_comparison_keypoint_indices",
         )
         
         # 4. 计算指标

@@ -41,7 +41,6 @@ class HeadPoseAnalyzer:
     支持的角度：
     1. Pitch（俯仰角）：上下点头
     2. Yaw（偏航角）：左右转头
-    3. Roll（翻滚角）：头部左右倾斜
     """
 
     def __init__(self, annotation_dict: Optional[Dict[str, List[HeadMovementLabel]]] = None):
@@ -62,11 +61,10 @@ class HeadPoseAnalyzer:
             npy_path: 融合后的.npy文件路径
 
         Returns:
-            包含三个角度的字典，如果分析失败则返回None
+            包含两个角度的字典，如果分析失败则返回None
             {
                 'pitch': float,  # 俯仰角（度）
                 'yaw': float,    # 偏航角（度）
-                'roll': float,   # 翻滚角（度）
             }
         """
         # 1. 读取关键点
@@ -80,12 +78,11 @@ class HeadPoseAnalyzer:
             return None
 
         # 3. 计算角度
-        pitch, yaw, roll = calculate_head_angles(head_kpts)
+        pitch, yaw = calculate_head_angles(head_kpts)
 
         result = {
             "pitch": pitch,
             "yaw": yaw,
-            "roll": roll,
         }
         
         return result
@@ -102,14 +99,13 @@ class HeadPoseAnalyzer:
         return {
             "pitch": angles.get("pitch", 0.0) - baseline_angles.get("pitch", 0.0),
             "yaw": angles.get("yaw", 0.0) - baseline_angles.get("yaw", 0.0),
-            "roll": angles.get("roll", 0.0) - baseline_angles.get("roll", 0.0),
         }
 
     @staticmethod
-    def _front_score(angles: Tuple[float, float, float]) -> float:
+    def _front_score(angles: Tuple[float, float]) -> float:
         """Smaller score means closer to the front pose."""
-        pitch, yaw, roll = angles
-        return abs(pitch) + abs(yaw) + 0.25 * abs(roll)
+        pitch, yaw = angles
+        return abs(pitch) + abs(yaw)
 
     def analyze_sequence(
         self,
@@ -131,7 +127,6 @@ class HeadPoseAnalyzer:
                 frame_idx: {
                     'pitch': float,
                     'yaw': float,
-                    'roll': float,
                 }
             }
         """
@@ -204,7 +199,7 @@ class HeadPoseAnalyzer:
         if not unlabeled_frames:
             return None
 
-        candidate_records: List[Tuple[float, int, Tuple[float, float, float], np.ndarray]] = []
+        candidate_records: List[Tuple[float, int, Tuple[float, float], np.ndarray]] = []
 
         for frame_idx in unlabeled_frames:
             npy_path = fused_dir / f"frame_{frame_idx:06d}_fused.npy"
@@ -250,7 +245,6 @@ class HeadPoseAnalyzer:
         mean_keypoints = keypoints_sum / len(selected_records)
         mean_pitch = float(np.mean([angles[0] for angles in angle_values]))
         mean_yaw = float(np.mean([angles[1] for angles in angle_values]))
-        mean_roll = float(np.mean([angles[2] for angles in angle_values]))
 
         return {
             "video_id": video_id,
@@ -262,7 +256,6 @@ class HeadPoseAnalyzer:
             "mean_angles": {
                 "pitch": mean_pitch,
                 "yaw": mean_yaw,
-                "roll": mean_roll,
             },
         }
 
@@ -280,7 +273,7 @@ class HeadPoseAnalyzer:
         Args:
             video_id: 视频ID (例如: "01_day_high")
             frame_idx: 帧索引
-            angles: 计算出的角度字典 {'pitch': float, 'yaw': float, 'roll': float}
+            angles: 计算出的角度字典 {'pitch': float, 'yaw': float}
             threshold_deg: 判断是否匹配的阈值（度）
             
         Returns:
