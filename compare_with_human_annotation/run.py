@@ -502,9 +502,7 @@ def run_single_view_comparison(
                     annotator_annotations[current_video_id] = labels_by_annotator[annotator_idx]
 
             if annotator_annotations:
-                annotation_jobs.append(
-                    (f"annotator_{annotator_idx + 1}", annotator_annotations)
-                )
+                annotation_jobs.append((f"annotator_{annotator_idx + 1}", annotator_annotations))
 
     if not annotation_jobs:
         raise ValueError(f"No annotations loaded for mode: {annotation_mode}")
@@ -533,14 +531,40 @@ def run_single_view_comparison(
 
         print(f"\n---- 标注来源: {annotation_name} ----")
 
-        axis_stats = _calculate_axis_comparison_stats(comparisons)
-        total_annotations = axis_stats["total_annotations"]
-        yaw_eval_count = axis_stats["yaw_axis_eval_count"]
-        yaw_match_count = axis_stats["yaw_axis_match_count"]
-        yaw_match_rate = axis_stats["yaw_axis_match_rate"]
-        pitch_eval_count = axis_stats["pitch_axis_eval_count"]
-        pitch_match_count = axis_stats["pitch_axis_match_count"]
-        pitch_match_rate = axis_stats["pitch_axis_match_rate"]
+        sam3d_output_root = get_single_view_output_root(cfg)
+        if annotation_mode == "majority":
+            output_root = sam3d_output_root / "majority"
+        else:
+            output_root = sam3d_output_root / "by_annotator" / annotation_name
+
+        for current_view in selected_views:
+            view_dir = get_sam3d_view_dir(cfg, person_id, env_jp, current_view)
+            if not view_dir.exists():
+                print(f"\n✗ 跳过 {current_view}: 目录不存在 {view_dir}")
+                continue
+
+            print(f"\n[{current_view}] 读取数据并计算角度...")
+            angles_by_frame: Dict[int, Dict[str, float]] = {}
+
+            for npz_path in sorted(view_dir.glob("*_sam3d_body.npz")):
+                frame_idx = _parse_sam3d_frame_idx(npz_path.name)
+                if frame_idx is None:
+                    continue
+                if start_frame is not None and frame_idx < start_frame:
+                    continue
+                if end_frame is not None and frame_idx > end_frame:
+                    continue
+
+                keypoints_3d = load_sam3d_keypoints(npz_path)
+                if keypoints_3d is None:
+                    continue
+
+                head_kpts = extract_head_keypoints(keypoints_3d, analyzer.keypoint_indices)
+                if head_kpts is None:
+                    continue
+
+                pitch, yaw = calculate_head_angles(head_kpts)
+                angles_by_frame[frame_idx] = {
                     "pitch": float(pitch),
                     "yaw": float(yaw),
                 }
@@ -552,12 +576,6 @@ def run_single_view_comparison(
             )
             baseline_angles = front_baseline["mean_angles"] if front_baseline else None
 
-        print(
-            f"  左右(Yaw)比较占比(在全部标注中): {axis_stats['yaw_axis_eval_ratio']:.1f}%"
-        )
-        print(
-            f"  上下(Pitch)比较占比(在全部标注中): {axis_stats['pitch_axis_eval_ratio']:.1f}%"
-        )
             comparisons: Dict[int, Dict] = {}
             for frame_idx, angles in sorted(angles_by_frame.items()):
                 comparison = analyzer.compare_with_annotations(
@@ -570,8 +588,8 @@ def run_single_view_comparison(
                 if comparison:
                     comparisons[frame_idx] = _serialize_comparison(comparison)
 
-            total_annotations = sum(len(comp["matches"]) for comp in comparisons.values())
             axis_stats = _calculate_axis_comparison_stats(comparisons)
+            total_annotations = axis_stats["total_annotations"]
             yaw_eval_count = axis_stats["yaw_axis_eval_count"]
             yaw_match_count = axis_stats["yaw_axis_match_count"]
             yaw_match_rate = axis_stats["yaw_axis_match_rate"]

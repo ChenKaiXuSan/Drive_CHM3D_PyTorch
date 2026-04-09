@@ -1,6 +1,13 @@
+hydra:
+  run:
+    dir: ${log_path}
+  job:
+    chdir: false
+
 defaults:
   - _self_
 
+log_path: logs/compare_with_human_annotation/${now:%Y-%m-%d}/${now:%H-%M-%S}
 paths:
   data_root: /workspace/data
   fused_npz_root: ${paths.data_root}/head3d_fuse_results_old
@@ -45,3 +52,7 @@ run:
   start_frame: ${defaults_run.start_frame}
   end_frame: ${defaults_run.end_frame}
   view: all
+
+# hydra默认的串行执行命令
+# cd /workspace/code
+# python -m compare_with_human_annotation.main -m run.mode=fused,single_view run.annotation_mode=majority,by_annotator
