@@ -65,7 +65,7 @@ __email__ = "chenkaixusan@gmail.com"
 def __getattr__(name):
     """懒加载 HeadPoseAnalyzer，避免运行 main 模块时重复导入警告。"""
     if name == "HeadPoseAnalyzer":
-        from .main import HeadPoseAnalyzer
+        from .head_pose_analyzer import HeadPoseAnalyzer
 
         return HeadPoseAnalyzer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

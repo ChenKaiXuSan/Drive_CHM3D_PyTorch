@@ -8,6 +8,10 @@
 			"name": "data",
 			"path": "/workspace/data"
 		},
+		{
+			"name": "MultiView_DriverAction_PyTorch",
+			"path": "/workspace/MultiView_DriverAction_PyTorch"
+		}
 	],
 	"settings": {
 		"chat.tools.terminal.autoApprove": {

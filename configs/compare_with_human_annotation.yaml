@@ -1,0 +1,47 @@
+defaults:
+  - _self_
+
+paths:
+  data_root: /workspace/data
+  fused_npz_root: ${paths.data_root}/head3d_fuse_results_old
+  sam3d_body_results_root: ${paths.data_root}/sam3d_body_results_right_full
+  annotation_file: ${paths.data_root}/annotation/label/full.json
+  output_root: ${paths.data_root}/compare_with_human_annotation_results
+
+fused:
+  subdir_raw: fused_npz
+  subdir_smoothed: smoothed_fused_npz
+
+output:
+  fused:
+    root: ${paths.output_root}/fused
+    raw: ${output.fused.root}/raw
+    smoothed: ${output.fused.root}/smoothed
+  single_view:
+    root: ${paths.output_root}/single_view
+
+defaults_run:
+  person_id: "01"
+  env_jp: "昼多い"
+  start_frame: null
+  end_frame: null
+  threshold: 5.0
+
+environments:
+  "昼多い": day_high
+  "昼少ない": day_low
+  "夜多い": night_high
+  "夜少ない": night_low
+
+sam3d:
+  views: [front, left, right]
+
+run:
+  mode: fused # fused, single_view
+  annotation_mode: majority # majority, by_annotator
+  person_id: null
+  env_jp: null
+  threshold: ${defaults_run.threshold}
+  start_frame: ${defaults_run.start_frame}
+  end_frame: ${defaults_run.end_frame}
+  view: all

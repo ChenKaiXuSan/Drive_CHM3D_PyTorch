@@ -7,28 +7,94 @@
 from pathlib import Path
 import json
 from collections import defaultdict
+from typing import Optional
 
-from .main import HeadPoseAnalyzer
+from omegaconf import DictConfig
+
+from .head_pose_analyzer import HeadPoseAnalyzer
 from .load import (
     load_head_movement_annotations,
     load_majority_voted_annotations,
     load_annotations_by_annotator,
 )
-from .config import (
+from .hydra_utils import (
     get_annotation_file,
+    get_env_mapping,
     get_fused_dir,
+    get_fused_root,
     get_output_dir,
     get_output_source_root,
-    ENVIRONMENTS,
-    FUSED_NPZ_ROOT,
-    DEFAULT_THRESHOLD,
+    load_config,
 )
 
 
-def get_all_person_env_pairs(smoothed: bool = False):
+def _calculate_axis_comparison_stats(comparisons) -> dict:
+    """计算分轴比较统计与比例。"""
+    total_annotations = sum(len(comp.get("matches", [])) for comp in comparisons.values())
+
+    yaw_eval_count = sum(
+        sum(1 for m in comp.get("matches", []) if m.get("yaw_axis_active", False))
+        for comp in comparisons.values()
+    )
+    yaw_match_count = sum(
+        sum(
+            1
+            for m in comp.get("matches", [])
+            if m.get("yaw_axis_active", False) and m.get("yaw_match", False)
+        )
+        for comp in comparisons.values()
+    )
+
+    pitch_eval_count = sum(
+        sum(1 for m in comp.get("matches", []) if m.get("pitch_axis_active", False))
+        for comp in comparisons.values()
+    )
+    pitch_match_count = sum(
+        sum(
+            1
+            for m in comp.get("matches", [])
+            if m.get("pitch_axis_active", False) and m.get("pitch_match", False)
+        )
+        for comp in comparisons.values()
+    )
+
+    yaw_match_rate = (yaw_match_count / yaw_eval_count * 100.0) if yaw_eval_count > 0 else 0.0
+    pitch_match_rate = (
+        pitch_match_count / pitch_eval_count * 100.0 if pitch_eval_count > 0 else 0.0
+    )
+    yaw_axis_eval_ratio = (
+        yaw_eval_count / total_annotations * 100.0 if total_annotations > 0 else 0.0
+    )
+    pitch_axis_eval_ratio = (
+        pitch_eval_count / total_annotations * 100.0 if total_annotations > 0 else 0.0
+    )
+    yaw_axis_match_ratio_in_all_annotations = (
+        yaw_match_count / total_annotations * 100.0 if total_annotations > 0 else 0.0
+    )
+    pitch_axis_match_ratio_in_all_annotations = (
+        pitch_match_count / total_annotations * 100.0 if total_annotations > 0 else 0.0
+    )
+
+    return {
+        "total_annotations": total_annotations,
+        "yaw_axis_eval_count": yaw_eval_count,
+        "yaw_axis_match_count": yaw_match_count,
+        "yaw_axis_match_rate": yaw_match_rate,
+        "yaw_axis_eval_ratio": yaw_axis_eval_ratio,
+        "yaw_axis_match_ratio_in_all_annotations": yaw_axis_match_ratio_in_all_annotations,
+        "pitch_axis_eval_count": pitch_eval_count,
+        "pitch_axis_match_count": pitch_match_count,
+        "pitch_axis_match_rate": pitch_match_rate,
+        "pitch_axis_eval_ratio": pitch_axis_eval_ratio,
+        "pitch_axis_match_ratio_in_all_annotations": pitch_axis_match_ratio_in_all_annotations,
+    }
+
+
+def get_all_person_env_pairs(smoothed: bool = False, cfg: Optional[DictConfig] = None):
     """获取所有可用的 person 和 environment 组合。"""
-    fused_root = FUSED_NPZ_ROOT
-    fused_subdir = "smoothed_fused_npz" if smoothed else "fused_npz"
+    cfg = cfg or load_config()
+    fused_root = get_fused_root(cfg)
+    fused_subdir = str(cfg.fused.subdir_smoothed if smoothed else cfg.fused.subdir_raw)
     pairs = []
 
     for person_dir in sorted(fused_root.iterdir()):
@@ -52,8 +118,9 @@ def run_single_comparison(
     analyzer,
     person_id,
     env_jp,
-    threshold_deg=DEFAULT_THRESHOLD,
+    threshold_deg: Optional[float] = None,
     smoothed: bool = False,
+    cfg: Optional[DictConfig] = None,
 ):
     """
     运行单个 person-env 的比较
@@ -71,12 +138,19 @@ def run_single_comparison(
             'by_direction': dict
         }
     """
-    env_en = ENVIRONMENTS.get(env_jp)
+    cfg = cfg or load_config()
+    env_mapping = get_env_mapping(cfg)
+    threshold_deg = float(
+        threshold_deg if threshold_deg is not None else cfg.defaults_run.threshold
+    )
+
+    env_en = env_mapping.get(env_jp)
     if env_en is None:
         env_en = env_jp
-    fused_dir = get_fused_dir(person_id, env_jp, smoothed=smoothed)
+    env_en = str(env_en)
+    fused_dir = get_fused_dir(cfg, person_id, env_jp, smoothed=smoothed)
     video_id = f"{person_id}_{env_en}"
-    # TODO 这个方法不用了，要删除掉
+
     front_baseline = analyzer.estimate_front_baseline(
         video_id=video_id,
         fused_dir=fused_dir,
@@ -97,6 +171,9 @@ def run_single_comparison(
     # 统计
     total_frames = len(angles)
     annotated_frames = len(comparisons)
+    annotated_frame_ratio = (
+        (annotated_frames / total_frames * 100.0) if total_frames > 0 else 0.0
+    )
 
     # 按方向统计
     by_direction = defaultdict(lambda: {"total": 0, "matched": 0, "rate": 0.0})
@@ -121,6 +198,8 @@ def run_single_comparison(
         (total_matches / total_annotations * 100) if total_annotations > 0 else 0
     )
 
+    axis_stats = _calculate_axis_comparison_stats(comparisons)
+
     # 计算每个方向的匹配率
     for direction in by_direction:
         total = by_direction[direction]["total"]
@@ -135,9 +214,24 @@ def run_single_comparison(
         "baseline": baseline_angles,
         "total_frames": total_frames,
         "annotated_frames": annotated_frames,
+        "annotated_frame_ratio": annotated_frame_ratio,
         "total_annotations": total_annotations,
         "total_matches": total_matches,
         "match_rate": match_rate,
+        "yaw_axis_eval_count": axis_stats["yaw_axis_eval_count"],
+        "yaw_axis_match_count": axis_stats["yaw_axis_match_count"],
+        "yaw_axis_match_rate": axis_stats["yaw_axis_match_rate"],
+        "yaw_axis_eval_ratio": axis_stats["yaw_axis_eval_ratio"],
+        "yaw_axis_match_ratio_in_all_annotations": axis_stats[
+            "yaw_axis_match_ratio_in_all_annotations"
+        ],
+        "pitch_axis_eval_count": axis_stats["pitch_axis_eval_count"],
+        "pitch_axis_match_count": axis_stats["pitch_axis_match_count"],
+        "pitch_axis_match_rate": axis_stats["pitch_axis_match_rate"],
+        "pitch_axis_eval_ratio": axis_stats["pitch_axis_eval_ratio"],
+        "pitch_axis_match_ratio_in_all_annotations": axis_stats[
+            "pitch_axis_match_ratio_in_all_annotations"
+        ],
         "by_direction": dict(by_direction),
     }
 
@@ -145,7 +239,7 @@ def run_single_comparison(
 def generate_paper_report(
     all_results,
     output_file,
-    threshold_deg=DEFAULT_THRESHOLD,
+    threshold_deg=5.0,
     report_title="头部姿态估计与人工标注比较 - 论文报告",
 ):
     """
@@ -175,15 +269,37 @@ def generate_paper_report(
         overall_rate = (
             (total_matches / total_annotations * 100) if total_annotations > 0 else 0
         )
+        overall_annotated_frame_ratio = (
+            (total_annotated / total_frames * 100) if total_frames > 0 else 0
+        )
+
+        total_yaw_eval = sum(r.get("yaw_axis_eval_count", 0) for r in all_results)
+        total_yaw_match = sum(r.get("yaw_axis_match_count", 0) for r in all_results)
+        total_pitch_eval = sum(r.get("pitch_axis_eval_count", 0) for r in all_results)
+        total_pitch_match = sum(r.get("pitch_axis_match_count", 0) for r in all_results)
+
+        yaw_axis_match_rate = (
+            (total_yaw_match / total_yaw_eval * 100) if total_yaw_eval > 0 else 0
+        )
+        pitch_axis_match_rate = (
+            (total_pitch_match / total_pitch_eval * 100) if total_pitch_eval > 0 else 0
+        )
 
         f.write(f"数据集规模：{len(all_results)} 个人-环境组合\n")
         f.write(f"总帧数：{total_frames:,}\n")
         f.write(
             f"有标注的帧：{total_annotated:,} ({100 * total_annotated / total_frames:.1f}%)\n"
         )
+        f.write(f"有标注帧占比：{overall_annotated_frame_ratio:.1f}%\n")
         f.write(f"总标注数：{total_annotations:,}\n")
         f.write(f"匹配数：{total_matches:,}\n")
         f.write(f"**总体匹配率：{overall_rate:.1f}%**\n\n")
+        f.write(
+            f"Yaw 分轴匹配率：{yaw_axis_match_rate:.1f}% ({total_yaw_match}/{total_yaw_eval})\n"
+        )
+        f.write(
+            f"Pitch 分轴匹配率：{pitch_axis_match_rate:.1f}% ({total_pitch_match}/{total_pitch_eval})\n\n"
+        )
 
         # 按环境分类统计
         f.write("## 2. 按环境分类统计\n\n")
@@ -325,14 +441,20 @@ def generate_paper_report(
 
 
 def _run_batch_comparison(
+    cfg: DictConfig,
     annotations,
     output_root,
-    threshold_deg=DEFAULT_THRESHOLD,
+    threshold_deg: Optional[float] = None,
     report_title="头部姿态估计与人工标注比较 - 论文报告",
     smoothed: bool = False,
 ):
     """执行批量比较并写入指定输出目录。"""
-    pairs = get_all_person_env_pairs(smoothed=smoothed)
+    threshold_deg = float(
+        threshold_deg if threshold_deg is not None else cfg.defaults_run.threshold
+    )
+    env_mapping = get_env_mapping(cfg)
+
+    pairs = get_all_person_env_pairs(smoothed=smoothed, cfg=cfg)
     print(f"\n找到 {len(pairs)} 个人-环境组合")
 
     analyzer = HeadPoseAnalyzer(annotation_dict=annotations)
@@ -341,9 +463,10 @@ def _run_batch_comparison(
     all_results = []
 
     for idx, (person_id, env_jp) in enumerate(pairs, 1):
-        env_en = ENVIRONMENTS.get(env_jp)
+        env_en = env_mapping.get(env_jp)
         if env_en is None:
             env_en = env_jp
+        env_en = str(env_en)
         print(
             f"[{idx}/{len(pairs)}] {person_id} - {env_jp} ({env_en})...",
             end=" ",
@@ -357,6 +480,7 @@ def _run_batch_comparison(
                 env_jp,
                 threshold_deg=threshold_deg,
                 smoothed=smoothed,
+                cfg=cfg,
             )
             all_results.append(result)
 
@@ -391,27 +515,35 @@ def _run_batch_comparison(
     print("=" * 80)
 
 
-def run_batch_comparison(threshold_deg=DEFAULT_THRESHOLD):
+def run_batch_comparison(
+    threshold_deg: Optional[float] = None,
+    cfg: Optional[DictConfig] = None,
+):
     """
     批量比较所有人物和环境，生成汇总报告
 
     Args:
         threshold_deg: 判断是否匹配的阈值（度）
     """
+    cfg = cfg or load_config()
+    threshold_deg = float(
+        threshold_deg if threshold_deg is not None else cfg.defaults_run.threshold
+    )
+
     print("=" * 80)
     print("批量比较所有人物和环境（raw + smoothed）")
     print("=" * 80)
     print(f"匹配阈值: {threshold_deg:g}°")
 
     print("\n加载标注...")
-    annotation_file = get_annotation_file()
+    annotation_file = get_annotation_file(cfg)
     annotations = load_head_movement_annotations(annotation_file)
     print(f"✓ 已加载 {len(annotations)} 个视频的标注")
 
     for smoothed in (False, True):
         source_name = "smoothed" if smoothed else "raw"
         source_label = "平滑" if smoothed else "未平滑"
-        output_root = get_output_source_root(smoothed=smoothed)
+        output_root = get_output_source_root(cfg, smoothed=smoothed)
 
         print(f"\n{'=' * 80}")
         print(f"开始比较来源: {source_label} ({source_name})")
@@ -419,6 +551,7 @@ def run_batch_comparison(threshold_deg=DEFAULT_THRESHOLD):
         print(f"{'=' * 80}")
 
         _run_batch_comparison(
+            cfg=cfg,
             annotations=annotations,
             output_root=output_root,
             threshold_deg=threshold_deg,
@@ -427,23 +560,31 @@ def run_batch_comparison(threshold_deg=DEFAULT_THRESHOLD):
         )
 
 
-def run_batch_comparison_majority_vote(threshold_deg=DEFAULT_THRESHOLD):
+def run_batch_comparison_majority_vote(
+    threshold_deg: Optional[float] = None,
+    cfg: Optional[DictConfig] = None,
+):
     """
     先对 3 位标注者做多数投票，再与模型比较，结果输出到独立目录。
     """
+    cfg = cfg or load_config()
+    threshold_deg = float(
+        threshold_deg if threshold_deg is not None else cfg.defaults_run.threshold
+    )
+
     print("=" * 80)
     print("多数投票后批量比较所有人物和环境（raw + smoothed）")
     print("=" * 80)
     print(f"匹配阈值: {threshold_deg:g}°")
 
     print("\n加载标注并执行多数投票...")
-    annotation_file = get_annotation_file()
+    annotation_file = get_annotation_file(cfg)
     annotations = load_majority_voted_annotations(annotation_file)
     print(f"✓ 已生成 {len(annotations)} 个视频的多数投票标注")
 
     for smoothed in (False, True):
         source_label = "平滑" if smoothed else "未平滑"
-        output_root = get_output_source_root(smoothed=smoothed) / "majority"
+        output_root = get_output_source_root(cfg, smoothed=smoothed) / "majority"
 
         print(f"\n{'=' * 80}")
         print(f"开始比较来源: {source_label}")
@@ -451,6 +592,7 @@ def run_batch_comparison_majority_vote(threshold_deg=DEFAULT_THRESHOLD):
         print(f"{'=' * 80}")
 
         _run_batch_comparison(
+            cfg=cfg,
             annotations=annotations,
             output_root=output_root,
             threshold_deg=threshold_deg,
@@ -459,17 +601,25 @@ def run_batch_comparison_majority_vote(threshold_deg=DEFAULT_THRESHOLD):
         )
 
 
-def run_batch_comparison_by_annotator(threshold_deg=DEFAULT_THRESHOLD):
+def run_batch_comparison_by_annotator(
+    threshold_deg: Optional[float] = None,
+    cfg: Optional[DictConfig] = None,
+):
     """
     分别与3位标注者的标注进行比较，生成3份独立结果
     """
+    cfg = cfg or load_config()
+    threshold_deg = float(
+        threshold_deg if threshold_deg is not None else cfg.defaults_run.threshold
+    )
+
     print("=" * 80)
     print("分别与每位标注者比较（raw + smoothed）")
     print("=" * 80)
     print(f"匹配阈值: {threshold_deg:g}°")
 
     print("\n加载按标注者分组的标注...")
-    annotation_file = get_annotation_file()
+    annotation_file = get_annotation_file(cfg)
     annotations_by_annotator = load_annotations_by_annotator(annotation_file)
     print(f"✓ 已加载 {len(annotations_by_annotator)} 个视频的标注")
 
@@ -483,7 +633,7 @@ def run_batch_comparison_by_annotator(threshold_deg=DEFAULT_THRESHOLD):
 
     for smoothed in (False, True):
         source_label = "平滑" if smoothed else "未平滑"
-        source_root = get_output_source_root(smoothed=smoothed) / "by_annotator"
+        source_root = get_output_source_root(cfg, smoothed=smoothed) / "by_annotator"
         print(f"\n{'=' * 80}")
         print(f"开始比较来源: {source_label}")
         print(f"输出根目录: {source_root}")
@@ -504,6 +654,7 @@ def run_batch_comparison_by_annotator(threshold_deg=DEFAULT_THRESHOLD):
             output_root_annotator = source_root / f"annotator_{annotator_idx + 1}"
 
             _run_batch_comparison(
+                cfg=cfg,
                 annotations=annotations_for_this_annotator,
                 output_root=output_root_annotator,
                 threshold_deg=threshold_deg,
