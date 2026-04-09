@@ -17,6 +17,7 @@ log_path: logs/head3d_fuse/${now:%Y-%m-%d}/${now:%H-%M-%S}
 visualize:
   save_single_view_visualization: true # 是否保存每个单独视角的可视化
   save_fused_view_visualization: true   # 是否保存融合结果的可视化
+  save_sample_number: 50 # 每个视角和融合结果保存的样本数量（均匀采样）
 
 infer:
   view_list: [front, left, right]

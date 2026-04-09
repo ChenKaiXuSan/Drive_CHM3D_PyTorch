@@ -22,6 +22,8 @@ Date      	By	Comments
 from typing import Dict
 from pathlib import Path
 import logging
+import os
+import tempfile
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -44,5 +46,21 @@ def _save_fused_keypoints(
         "valid_views": n_valid,
         "npz_paths": {view: str(path) for view, path in npz_paths.items()},
     }
-    np.save(save_path, payload)
+
+    # Atomic write: write to a temp file first, then replace target file.
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=save_dir, prefix=f".{save_path.stem}.", suffix=".tmp", delete=False
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            np.save(tmp_file, payload)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+
+        os.replace(tmp_path, save_path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
+
     return save_path

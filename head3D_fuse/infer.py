@@ -111,7 +111,8 @@ def _fuse_single_person_env(
     logger.info(f"==== Starting Fuse for Person: {person_id}, Env: {env_name} ====")
 
     # 随机保存100frame作为可视化内容
-    random_save_idx = np.random.uniform(0, len(frame_triplets), 100).astype(int)
+    save_sample_number = cfg.visualize.get("save_sample_number", 50)
+    random_save_idx = np.random.uniform(0, len(frame_triplets), save_sample_number).astype(int)
 
     for i, triplet in enumerate(
         tqdm(frame_triplets, desc=f"Fusing {person_id}/{env_name}")
@@ -388,8 +389,9 @@ def _smooth_fused_keypoints_env(
     )
     logger.info(f"Smoothed keypoints shape: {smoothed_array.shape}")
 
-    # 随机保存100frame作为可视化内容
-    random_save_idx = np.random.uniform(0, len(sorted_frames), 100).astype(int)
+    # 随机保存save_sample_numberframe作为可视化内容
+    save_sample_number = cfg.visualize.get("save_sample_number", 50)
+    random_save_idx = np.random.uniform(0, len(sorted_frames), save_sample_number).astype(int)
 
     frame_to_triplet = {triplet.frame_idx: triplet for triplet in frame_triplets}
 
@@ -408,7 +410,7 @@ def _smooth_fused_keypoints_env(
         )
 
         # 使用该帧对应的outputs进行可视化
-        # * 这里也只选100frame进行可视化
+        
         if i in random_save_idx:
             triplet = frame_to_triplet.get(frame_idx)
             if triplet is not None:
