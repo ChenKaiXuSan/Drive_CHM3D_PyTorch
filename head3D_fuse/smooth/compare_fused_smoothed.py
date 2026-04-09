@@ -165,11 +165,11 @@ class KeypointsComparator:
         self, save_path: Optional[Path] = None, keypoint_indices: Optional[List[int]] = None
     ):
         """
-        绘制对比图
+        Plot trajectory comparison.
 
         Args:
-            save_path: 保存路径
-            keypoint_indices: 要绘制的关键点索引列表（默认绘制前3个）
+            save_path: Output path for the figure
+            keypoint_indices: Keypoint indices to plot (default: first 3)
         """
         if keypoint_indices is None:
             keypoint_indices = list(range(min(3, self.N)))
@@ -185,7 +185,7 @@ class KeypointsComparator:
             for dim, dim_name in enumerate(["X", "Y", "Z"]):
                 ax = axes[i, dim]
 
-                # 绘制原始和平滑后的轨迹
+                # Plot fused and smoothed trajectories.
                 ax.plot(
                     t,
                     self.fused_kpts[:, kpt_idx, dim],
@@ -220,15 +220,15 @@ class KeypointsComparator:
 
     def plot_metrics(self, save_path: Optional[Path] = None, keypoint_indices: Optional[List[int]] = None):
         """
-        绘制评估指标图
+        Plot metric overview figures.
 
         Args:
-            save_path: 保存路径
-            keypoint_indices: 要显示的关键点索引（None表示所有关键点）
+            save_path: Output path for the figure
+            keypoint_indices: Keypoint indices to show (None means all keypoints)
         """
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-        # 1. 逐帧差异
+        # 1. Frame-wise difference
         ax = axes[0, 0]
         frame_diff = self.compute_frame_wise_difference()
         ax.plot(frame_diff, "-o", markersize=3)
@@ -237,7 +237,7 @@ class KeypointsComparator:
         ax.set_ylabel("Mean L2 Distance")
         ax.grid(True, alpha=0.3)
 
-        # 2. 速度对比
+        # 2. Velocity comparison
         ax = axes[0, 1]
         fused_vel, _ = self.compute_smoothness(self.fused_kpts)
         smooth_vel, _ = self.compute_smoothness(self.smoothed_kpts)
@@ -253,7 +253,7 @@ class KeypointsComparator:
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-        # 3. 加速度对比
+        # 3. Acceleration comparison
         ax = axes[1, 0]
         _, fused_accel = self.compute_smoothness(self.fused_kpts)
         _, smooth_accel = self.compute_smoothness(self.smoothed_kpts)
@@ -269,19 +269,19 @@ class KeypointsComparator:
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-        # 4. 关键点差异分布（支持按索引过滤）
+        # 4. Keypoint-wise difference distribution (optional index filtering)
         ax = axes[1, 1]
         point_wise = self.compute_point_wise_difference()
         
         if keypoint_indices is not None:
-            # 只显示指定关键点的差异
+            # Show only selected keypoints.
             point_wise_filtered = point_wise[:, keypoint_indices]
             kpt_diff_mean = np.mean(point_wise_filtered, axis=0)
             x_labels = [str(idx) for idx in keypoint_indices]
             x_positions = range(len(keypoint_indices))
             title_suffix = f" (Keypoints: {keypoint_indices})"
         else:
-            # 显示所有关键点的差异
+            # Show differences for all keypoints.
             kpt_diff_mean = np.mean(point_wise, axis=0)
             x_positions = range(len(kpt_diff_mean))
             x_labels = [str(i) for i in range(self.N)]

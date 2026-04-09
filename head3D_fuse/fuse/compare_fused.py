@@ -345,7 +345,7 @@ class FusedViewComparator:
             keypoint_indices = list(range(min(7, self.N)))  # 默认前7个
         
         fig, axes = plt.subplots(3, 2, figsize=figsize)
-        fig.suptitle("融合结果与单视角关键点对比分析", fontsize=16, fontweight="bold")
+        fig.suptitle("Fused vs Single-view Keypoints Analysis", fontsize=16, fontweight="bold")
         
         # 1. 与各视角的平均距离 - 柱状图
         ax = axes[0, 0]
@@ -353,8 +353,8 @@ class FusedViewComparator:
         mean_dists = [np.nanmean(distances[v]) for v in self.view_names]
         std_dists = [np.nanstd(distances[v]) for v in self.view_names]
         ax.bar(self.view_names, mean_dists, yerr=std_dists, capsize=5, alpha=0.7)
-        ax.set_title("融合结果与各视角的平均距离")
-        ax.set_ylabel("欧氏距离")
+        ax.set_title("Mean Distance from Fused to Each View")
+        ax.set_ylabel("Euclidean Distance")
         ax.grid(True, alpha=0.3)
         
         # 2. 时间稳定性对比 - Jitter
@@ -367,8 +367,8 @@ class FusedViewComparator:
             jitter_data.append(np.nanmean(view_jitter))
             jitter_labels.append(view.capitalize())
         ax.bar(jitter_labels, jitter_data, alpha=0.7, color=['green'] + ['blue'] * len(self.view_names))
-        ax.set_title("时间稳定性对比 (Jitter)")
-        ax.set_ylabel("平均加速度")
+        ax.set_title("Temporal Stability Comparison (Jitter)")
+        ax.set_ylabel("Mean Acceleration")
         ax.grid(True, alpha=0.3)
         
         # 3. 各关键点与各视角的距离热图
@@ -393,7 +393,7 @@ class FusedViewComparator:
             fmt=".3f",
             cmap="YlOrRd"
         )
-        ax.set_title("各关键点与各视角的平均距离")
+        ax.set_title("Mean Distance per Keypoint and View")
         
         # 4. 选择特定关键点的时序轨迹对比（以第一个关键点为例）
         ax = axes[1, 1]
@@ -401,9 +401,9 @@ class FusedViewComparator:
         ax.plot(self.fused[:, kp_idx, 0], label="Fused", linewidth=2, alpha=0.8)
         for view in self.view_names:
             ax.plot(self.views[view][:, kp_idx, 0], label=view.capitalize(), alpha=0.6)
-        ax.set_title(f"关键点 {kp_idx} 的 X 坐标时序对比")
-        ax.set_xlabel("帧")
-        ax.set_ylabel("X 坐标")
+        ax.set_title(f"Keypoint {kp_idx} X-coordinate Over Time")
+        ax.set_xlabel("Frame")
+        ax.set_ylabel("X Coordinate")
         ax.legend()
         ax.grid(True, alpha=0.3)
         
@@ -430,16 +430,16 @@ class FusedViewComparator:
             fmt=".3f",
             cmap="coolwarm"
         )
-        ax.set_title("视角间一致性（两两距离）")
+        ax.set_title("Inter-view Consistency (Pairwise Distance)")
         
         # 6. 每帧的平均距离时序图
         ax = axes[2, 1]
         for view in self.view_names:
             distances_per_frame = np.nanmean(distances[view], axis=1)
             ax.plot(distances_per_frame, label=view.capitalize(), alpha=0.7)
-        ax.set_title("每帧融合结果与各视角的平均距离")
-        ax.set_xlabel("帧")
-        ax.set_ylabel("平均距离")
+        ax.set_title("Per-frame Mean Distance: Fused vs Views")
+        ax.set_xlabel("Frame")
+        ax.set_ylabel("Mean Distance")
         ax.legend()
         ax.grid(True, alpha=0.3)
         

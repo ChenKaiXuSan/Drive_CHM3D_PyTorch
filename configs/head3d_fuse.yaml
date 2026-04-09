@@ -15,18 +15,10 @@ paths:
 log_path: logs/head3d_fuse/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 visualize:
-  save_mesh_ply: false
-  save_mesh_overlay: false
-  save_bbox_image: false
-  save_3d_mesh: false
-  save_3d_keypoints: true
-
   save_single_view_visualization: true # 是否保存每个单独视角的可视化
   save_fused_view_visualization: true   # 是否保存融合结果的可视化
 
-
 infer:
-  num_inference_steps: 4
   view_list: [front, left, right]
 
   workers: 32
@@ -68,7 +60,7 @@ fuse:
 # ========== 时间平滑配置 ==========
 smooth:
   
-  # 是否启用时间平滑（默认关闭）
+  # 是否启用时间平滑
   enable_temporal_smooth: true
   
   # 平滑方法选择: "gaussian", "savgol", "kalman", "bilateral"
