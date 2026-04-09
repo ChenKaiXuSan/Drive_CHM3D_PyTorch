@@ -87,7 +87,7 @@ def _fuse_single_person_env(
     cfg: DictConfig,
     frame_triplets: list,
     view_list: list,
-) -> tuple:
+) -> list:
     """融合多视图关键点
 
     Args:
@@ -99,14 +99,12 @@ def _fuse_single_person_env(
         view_list: 视图列表
 
     Returns:
-        all_fused_kpts: 所有融合的关键点 {frame_idx: keypoints}
-        all_outputs: 所有输出 {frame_idx: outputs}
+        fused_frame_indices: 成功融合并保存的帧索引列表
     """
     person_id = person_env_dir.parent.name
     env_name = person_env_dir.name
 
-    all_fused_kpts = {}
-    all_outputs = {}
+    fused_frame_indices = []
     diff_reports = []
     fused_method = cfg.fuse.get("fuse_method", "median")
 
@@ -126,8 +124,6 @@ def _fuse_single_person_env(
             view: load_npz_output(npz_path)
             for view, npz_path in triplet.npz_paths.items()
         }
-        all_outputs[triplet.frame_idx] = outputs
-
         keypoints_by_view = {}
         for view in view_list:
             filtered_view_3dkpt = _normalize_keypoints(
@@ -175,7 +171,7 @@ def _fuse_single_person_env(
             alignment_max_iters=alignment_max_iters,
         )
 
-        all_fused_kpts[triplet.frame_idx] = fused_kpt
+        fused_frame_indices.append(triplet.frame_idx)
         # 保存融合的关键点
         save_dir = infer_root / person_id / env_name / "fused_npz"
         _save_fused_keypoints(
@@ -266,7 +262,32 @@ def _fuse_single_person_env(
 
     logger.info(f"==== Finished Fuse for Person: {person_id}, Env: {env_name} ====")
 
-    return all_fused_kpts, all_outputs
+    return fused_frame_indices
+
+
+def _load_fused_keypoints_from_file(
+    infer_root: Path, person_id: str, env_name: str, frame_idx: int
+) -> Optional[np.ndarray]:
+    """从 fused_npz 目录读取指定帧的融合关键点。"""
+    fused_path = infer_root / person_id / env_name / "fused_npz" / f"frame_{frame_idx:06d}_fused.npy"
+    if not fused_path.exists():
+        logger.warning("Missing fused file for frame %s: %s", frame_idx, fused_path)
+        return None
+
+    payload = np.load(fused_path, allow_pickle=True)
+    if isinstance(payload, np.ndarray) and payload.dtype == object:
+        payload = payload.item()
+
+    if not isinstance(payload, dict):
+        logger.warning("Invalid fused payload format: %s", fused_path)
+        return None
+
+    fused_keypoints = payload.get("fused_keypoints_3d")
+    if not isinstance(fused_keypoints, np.ndarray):
+        logger.warning("Missing fused_keypoints_3d in fused file: %s", fused_path)
+        return None
+
+    return cast(np.ndarray, fused_keypoints)
 
 
 # =====================================================================
@@ -277,8 +298,9 @@ def _smooth_fused_keypoints_env(
     out_root: Path,
     infer_root: Path,
     cfg: DictConfig,
-    all_fused_kpts: dict,
-    all_outputs: dict,
+    frame_triplets: list,
+    fused_frame_indices: list,
+    view_list: list,
 ) -> tuple:
     """平滑融合后的关键点
 
@@ -287,27 +309,52 @@ def _smooth_fused_keypoints_env(
         out_root: 输出根目录
         infer_root: 推理根目录
         cfg: 配置
-        all_fused_kpts: 融合的关键点 {frame_idx: keypoints}
-        all_outputs: 输出数据 {frame_idx: outputs}
+        frame_triplets: 帧三元组列表
+        fused_frame_indices: 成功融合并保存的帧索引列表
+        view_list: 视图列表
 
     Returns:
         keypoints_array: 原始关键点数组
         smoothed_array: 平滑后的关键点数组
+        sorted_frames: 成功读取并参与处理的帧索引
     """
     person_id = person_env_dir.parent.name
     env_name = person_env_dir.name
 
-    # 检查是否启用平滑
-    if not all_fused_kpts or not cfg.smooth.get("enable_temporal_smooth", False):
-        logger.info("Temporal smoothing is disabled or no keypoints to smooth")
-        return None, None
+    if not fused_frame_indices:
+        logger.info("No fused keypoints to smooth")
+        return None, None, []
 
-    logger.info(f"Applying temporal smoothing to {len(all_fused_kpts)} frames...")
+    # 1. 从 fused_npz 读取并组装 numpy 数组 (T, N, 3)
+    sorted_frames = sorted(set(int(idx) for idx in fused_frame_indices))
+    loaded_frames = []
+    loaded_keypoints = []
+    for frame_idx in sorted_frames:
+        fused_kpt = _load_fused_keypoints_from_file(
+            infer_root=infer_root,
+            person_id=person_id,
+            env_name=env_name,
+            frame_idx=frame_idx,
+        )
+        if fused_kpt is None:
+            continue
+        loaded_frames.append(frame_idx)
+        loaded_keypoints.append(fused_kpt)
 
-    # 1. 将字典转换为 numpy 数组 (T, N, 3)
-    sorted_frames = sorted(all_fused_kpts.keys())
-    keypoints_array = np.stack([all_fused_kpts[idx] for idx in sorted_frames], axis=0)
+    if not loaded_keypoints:
+        logger.warning("No fused keypoints loaded from disk for %s/%s", person_id, env_name)
+        return None, None, []
+
+    sorted_frames = loaded_frames
+    keypoints_array = np.stack(loaded_keypoints, axis=0)
     logger.info(f"Keypoints array shape: {keypoints_array.shape}")
+
+    # 检查是否启用平滑
+    if not cfg.smooth.get("enable_temporal_smooth", False):
+        logger.info("Temporal smoothing is disabled")
+        return keypoints_array, None, sorted_frames
+
+    logger.info(f"Applying temporal smoothing to {len(sorted_frames)} frames...")
 
     # 2. 根据方法准备参数
     smooth_method = cfg.smooth.get("temporal_smooth_method", "gaussian")
@@ -344,6 +391,8 @@ def _smooth_fused_keypoints_env(
     # 随机保存100frame作为可视化内容
     random_save_idx = np.random.uniform(0, len(sorted_frames), 100).astype(int)
 
+    frame_to_triplet = {triplet.frame_idx: triplet for triplet in frame_triplets}
+
     # 4. 保存平滑后的结果
     for i, frame_idx in enumerate(sorted_frames):
         smooth_fused_kpt = smoothed_array[i]
@@ -353,7 +402,7 @@ def _smooth_fused_keypoints_env(
             save_dir=save_dir,
             frame_idx=frame_idx,
             fused_keypoints=smooth_fused_kpt,
-            fused_mask=None,
+            fused_mask=np.ones((smooth_fused_kpt.shape[0],), dtype=np.bool_),
             n_valid=smooth_fused_kpt.shape[0],
             npz_paths={},
         )
@@ -361,8 +410,13 @@ def _smooth_fused_keypoints_env(
         # 使用该帧对应的outputs进行可视化
         # * 这里也只选100frame进行可视化
         if i in random_save_idx:
-            frame_outputs = all_outputs.get(frame_idx)
-            if frame_outputs is not None:
+            triplet = frame_to_triplet.get(frame_idx)
+            if triplet is not None:
+                frame_outputs = {
+                    view: load_npz_output(npz_path)
+                    for view, npz_path in triplet.npz_paths.items()
+                    if view in view_list
+                }
                 _save_frame_fuse_3dkpt_visualization(
                     save_dir=out_root
                     / person_id
@@ -377,7 +431,7 @@ def _smooth_fused_keypoints_env(
                 )
             else:
                 logger.warning(
-                    f"No outputs found for frame {frame_idx} during smoothing visualization"
+                    f"No triplet found for frame {frame_idx} during smoothing visualization"
                 )
 
     logger.info(f"✓ Temporal smoothing completed and saved {len(sorted_frames)} frames")
@@ -403,7 +457,7 @@ def _smooth_fused_keypoints_env(
         f"==== Finished Temporal Smoothing for Person: {person_id}, Env: {env_name} ===="
     )
 
-    return keypoints_array, smoothed_array
+    return keypoints_array, smoothed_array, sorted_frames
 
 
 def _normalize_keypoints(keypoints: Optional[np.ndarray]) -> np.ndarray:
@@ -642,8 +696,9 @@ def _compare_fused_with_views(
     person_env_dir: Path,
     out_root: Path,
     cfg: DictConfig,
-    all_fused_kpts: dict,
-    all_outputs: dict,
+    keypoints_array: Optional[np.ndarray],
+    frame_triplets: list,
+    fused_frame_indices: list,
     view_list: list,
 ):
     """比较融合结果与各个单视角的3D关键点
@@ -652,15 +707,20 @@ def _compare_fused_with_views(
         person_env_dir: 人员环境目录
         out_root: 输出根目录
         cfg: 配置
-        all_fused_kpts: 融合的关键点 {frame_idx: keypoints}
-        all_outputs: 输出数据 {frame_idx: {view: output}}
+        keypoints_array: 融合后的关键点数组 (T, N, 3)
+        frame_triplets: 帧三元组列表
+        fused_frame_indices: 与 keypoints_array 对齐的帧索引列表
         view_list: 视角列表
     """
     person_id = person_env_dir.parent.name
     env_name = person_env_dir.name
 
     # 检查是否启用对比
-    if not all_fused_kpts or not cfg.fuse.get("enable_fused_view_comparison", False):
+    if (
+        keypoints_array is None
+        or not fused_frame_indices
+        or not cfg.fuse.get("enable_fused_view_comparison", False)
+    ):
         logger.info("Fused vs Views comparison is disabled or no data to compare")
         return
 
@@ -672,38 +732,28 @@ def _compare_fused_with_views(
 
     try:
         # 1. 准备数据：将字典转换为numpy数组
-        sorted_frames = sorted(all_fused_kpts.keys())
+        sorted_frames = [int(idx) for idx in fused_frame_indices]
 
         # 融合后的关键点 (T, M, 3) - 使用过滤后关键点
-        fused_array = _filter_keypoints_sequence(
-            np.stack([all_fused_kpts[idx] for idx in sorted_frames], axis=0)
-        )
+        fused_array = _filter_keypoints_sequence(keypoints_array)
         logger.info(f"Fused keypoints shape: {fused_array.shape}")
+
+        frame_to_triplet = {triplet.frame_idx: triplet for triplet in frame_triplets}
 
         # 各视角的关键点
         view_keypoints = {}
         for view in view_list:
             view_kpts_list = []
             for frame_idx in sorted_frames:
-                frame_outputs = all_outputs.get(frame_idx)
-                if frame_outputs is None or view not in frame_outputs:
+                triplet = frame_to_triplet.get(frame_idx)
+                if triplet is None or view not in triplet.npz_paths:
                     logger.warning(
-                        f"Missing outputs for frame {frame_idx}, view {view}"
+                        f"Missing triplet data for frame {frame_idx}, view {view}"
                     )
                     continue
 
-                # 优先使用过滤后的关键点；若缺失则从原始关键点现算过滤
-                kpts_3d = frame_outputs[view].get("filtered_pred_keypoints_3d")
-                if kpts_3d is None:
-                    kpts_3d = _normalize_keypoints(
-                        frame_outputs[view].get("pred_keypoints_3d")
-                    )
-
-                if kpts_3d is None:
-                    logger.warning(
-                        f"Missing filtered 3D keypoints for frame {frame_idx}, view {view}"
-                    )
-                    continue
+                frame_output = load_npz_output(triplet.npz_paths[view])
+                kpts_3d = _normalize_keypoints(frame_output.get("pred_keypoints_3d"))
 
                 view_kpts_list.append(kpts_3d)
 
@@ -811,7 +861,7 @@ def process_single_person_env(
         return
 
     # 1. 融合多视图关键点
-    all_fused_kpts, all_outputs = _fuse_single_person_env(
+    fused_frame_indices = _fuse_single_person_env(
         person_env_dir=person_env_dir,
         out_root=out_root,
         infer_root=infer_root,
@@ -821,13 +871,14 @@ def process_single_person_env(
     )
 
     # 2. 平滑融合后的关键点
-    keypoints_array, smoothed_array = _smooth_fused_keypoints_env(
+    keypoints_array, smoothed_array, fused_frame_indices = _smooth_fused_keypoints_env(
         person_env_dir=person_env_dir,
         out_root=out_root,
         infer_root=infer_root,
         cfg=cfg,
-        all_fused_kpts=all_fused_kpts,
-        all_outputs=all_outputs,
+        frame_triplets=frame_triplets,
+        fused_frame_indices=fused_frame_indices,
+        view_list=view_list,
     )
 
     # 3. 比较平滑前后的差异
@@ -844,15 +895,15 @@ def process_single_person_env(
         person_env_dir=person_env_dir,
         out_root=out_root,
         cfg=cfg,
-        all_fused_kpts=all_fused_kpts,
-        all_outputs=all_outputs,
+        keypoints_array=keypoints_array,
+        frame_triplets=frame_triplets,
+        fused_frame_indices=fused_frame_indices,
         view_list=view_list,
     )
 
     # * 结束推理一个人的一个环境之后，清空内存
     # 释放当前 person/env 的大对象，避免长流程中内存持续增长
-    del all_fused_kpts
-    del all_outputs
+    del fused_frame_indices
     del keypoints_array
     del smoothed_array
     del frame_triplets
