@@ -71,6 +71,18 @@
         // "--env_list=[夜多い]",
         "--num-workers=1",
       ]
+    },
+    {
+      "name": "compare_with_human_annotation",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "compare_with_human_annotation.main",
+      "cwd": "/workspace/code",
+      "python": "/opt/conda/envs/sam_3d_body/bin/python",
+      "console": "integratedTerminal",
+      "args": [
+        "majority"
+      ]
     }
   ]
 }

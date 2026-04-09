@@ -21,6 +21,10 @@ visualize:
   save_3d_mesh: false
   save_3d_keypoints: true
 
+  save_single_view_visualization: true # 是否保存每个单独视角的可视化
+  save_fused_view_visualization: true   # 是否保存融合结果的可视化
+
+
 infer:
   num_inference_steps: 4
   view_list: [front, left, right]

@@ -51,7 +51,7 @@ DEFAULT_START_FRAME = None  # None 表示从头开始
 DEFAULT_END_FRAME = None  # None 表示到结尾
 
 # 默认的匹配阈值（度）
-DEFAULT_THRESHOLD = 50.0
+DEFAULT_THRESHOLD = 5.0
 
 # 支持的环境
 ENVIRONMENTS = {

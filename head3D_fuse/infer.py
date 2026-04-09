@@ -111,6 +111,9 @@ def _fuse_single_person_env(
 
     logger.info(f"==== Starting Fuse for Person: {person_id}, Env: {env_name} ====")
 
+    # 随机保存100frame作为可视化内容
+    random_save_idx = np.random.uniform(0, len(frame_triplets), 100).astype(int)
+
     for i, triplet in enumerate(
         tqdm(frame_triplets, desc=f"Fusing {person_id}/{env_name}")
     ):
@@ -158,6 +161,7 @@ def _fuse_single_person_env(
         alignment_trim_ratio = cfg.fuse.get("alignment_trim_ratio", 0.2)
         alignment_max_iters = cfg.fuse.get("alignment_max_iters", 3)
 
+        # 融合三个视角
         fused_kpt, fused_mask, n_valid = fuse_3view_keypoints(
             keypoints_by_view,
             method=fused_method,
@@ -182,31 +186,37 @@ def _fuse_single_person_env(
             npz_paths=triplet.npz_paths,
         )
 
-        # 可视化保存各个视角结果
-        for view in view_list:
-            if view not in outputs:
-                logger.warning(
-                    f"Missing output for view={view} frame={triplet.frame_idx}"
-                )
-                continue
-            vis_root = out_root / person_id / env_name / "fused" / "different_vis"
-            _save_view_visualizations(
-                output=outputs[view],
-                save_root=vis_root,
-                view=view,
-                frame_idx=triplet.frame_idx,
-                cfg=cfg,
-                visualizer=visualizer,
-            )
+        # 可视化结果
+        if i in random_save_idx:
+            # 单独保存三个视角的可视化结果
+            if cfg.visualize.save_single_view_visualization:
+                for view in view_list:
+                    if view not in outputs:
+                        logger.warning(
+                            f"Missing output for view={view} frame={triplet.frame_idx}"
+                        )
+                        continue
+                    vis_root = (
+                        out_root / person_id / env_name / "fused" / "different_vis"
+                    )
+                    _save_view_visualizations(
+                        output=outputs[view],
+                        save_root=vis_root,
+                        view=view,
+                        frame_idx=triplet.frame_idx,
+                        cfg=cfg,
+                        visualizer=visualizer,
+                    )
 
-        # 保存三个视角的frame和融合结果的可视化
-        _save_frame_fuse_3dkpt_visualization(
-            save_dir=out_root / person_id / env_name / "fused" / "vis_together",
-            frame_idx=triplet.frame_idx,
-            fused_keypoints=fused_kpt,
-            outputs=outputs,
-            visualizer=visualizer,
-        )
+            # 保存三个视角的frame和融合结果的可视化
+            if cfg.visualize.save_fused_view_visualization:
+                _save_frame_fuse_3dkpt_visualization(
+                    save_dir=out_root / person_id / env_name / "fused" / "vis_together",
+                    frame_idx=triplet.frame_idx,
+                    fused_keypoints=fused_kpt,
+                    outputs=outputs,
+                    visualizer=visualizer,
+                )
 
     # 保存 npz diff 报告
     if diff_reports:
@@ -219,38 +229,39 @@ def _fuse_single_person_env(
         logger.info("No npz differences found for %s/%s", person_id, env_name)
 
     # 融合frame到video
-    merge_frames_to_video(
-        frame_dir=out_root / person_id / env_name / "fused" / "vis_together",
-        output_video_path=out_root
-        / person_id
-        / env_name
-        / "merged_video"
-        / "fused_3d_keypoints.mp4",
-        fps=30,
-    )
-    merge_frames_to_video(
-        frame_dir=out_root / person_id / env_name / "fused" / "different_vis" / "front",
-        output_video_path=out_root
-        / person_id
-        / env_name
-        / "merged_video"
-        / "front.mp4",
-        fps=30,
-    )
-    merge_frames_to_video(
-        frame_dir=out_root / person_id / env_name / "fused" / "different_vis" / "left",
-        output_video_path=out_root / person_id / env_name / "merged_video" / "left.mp4",
-        fps=30,
-    )
-    merge_frames_to_video(
-        frame_dir=out_root / person_id / env_name / "fused" / "different_vis" / "right",
-        output_video_path=out_root
-        / person_id
-        / env_name
-        / "merged_video"
-        / "right.mp4",
-        fps=30,
-    )
+    # ! 因为现在只保存100frame，所以也没办法把所有的frame保存成video了
+    # merge_frames_to_video(
+    #     frame_dir=out_root / person_id / env_name / "fused" / "vis_together",
+    #     output_video_path=out_root
+    #     / person_id
+    #     / env_name
+    #     / "merged_video"
+    #     / "fused_3d_keypoints.mp4",
+    #     fps=30,
+    # )
+    # merge_frames_to_video(
+    #     frame_dir=out_root / person_id / env_name / "fused" / "different_vis" / "front",
+    #     output_video_path=out_root
+    #     / person_id
+    #     / env_name
+    #     / "merged_video"
+    #     / "front.mp4",
+    #     fps=30,
+    # )
+    # merge_frames_to_video(
+    #     frame_dir=out_root / person_id / env_name / "fused" / "different_vis" / "left",
+    #     output_video_path=out_root / person_id / env_name / "merged_video" / "left.mp4",
+    #     fps=30,
+    # )
+    # merge_frames_to_video(
+    #     frame_dir=out_root / person_id / env_name / "fused" / "different_vis" / "right",
+    #     output_video_path=out_root
+    #     / person_id
+    #     / env_name
+    #     / "merged_video"
+    #     / "right.mp4",
+    #     fps=30,
+    # )
 
     logger.info(f"==== Finished Fuse for Person: {person_id}, Env: {env_name} ====")
 
@@ -329,6 +340,9 @@ def _smooth_fused_keypoints_env(
     )
     logger.info(f"Smoothed keypoints shape: {smoothed_array.shape}")
 
+    # 随机保存100frame作为可视化内容
+    random_save_idx = np.random.uniform(0, len(sorted_frames), 100).astype(int)
+
     # 4. 保存平滑后的结果
     for i, frame_idx in enumerate(sorted_frames):
         smooth_fused_kpt = smoothed_array[i]
@@ -344,42 +358,45 @@ def _smooth_fused_keypoints_env(
         )
 
         # 使用该帧对应的outputs进行可视化
-        frame_outputs = all_outputs.get(frame_idx)
-        if frame_outputs is not None:
-            _save_frame_fuse_3dkpt_visualization(
-                save_dir=out_root
-                / person_id
-                / env_name
-                / "smoothed"
-                / "smoothed_fused"
-                / "vis_together",
-                frame_idx=frame_idx,
-                fused_keypoints=smooth_fused_kpt,
-                outputs=frame_outputs,
-                visualizer=visualizer,
-            )
-        else:
-            logger.warning(
-                f"No outputs found for frame {frame_idx} during smoothing visualization"
-            )
+        # * 这里也只选100frame进行可视化
+        if i in random_save_idx:
+            frame_outputs = all_outputs.get(frame_idx)
+            if frame_outputs is not None:
+                _save_frame_fuse_3dkpt_visualization(
+                    save_dir=out_root
+                    / person_id
+                    / env_name
+                    / "smoothed"
+                    / "smoothed_fused"
+                    / "vis_together",
+                    frame_idx=frame_idx,
+                    fused_keypoints=smooth_fused_kpt,
+                    outputs=frame_outputs,
+                    visualizer=visualizer,
+                )
+            else:
+                logger.warning(
+                    f"No outputs found for frame {frame_idx} during smoothing visualization"
+                )
 
     logger.info(f"✓ Temporal smoothing completed and saved {len(sorted_frames)} frames")
 
     # merge frame to video
-    merge_frames_to_video(
-        frame_dir=out_root
-        / person_id
-        / env_name
-        / "smoothed"
-        / "smoothed_fused"
-        / "vis_together",
-        output_video_path=out_root
-        / person_id
-        / env_name
-        / "merged_video"
-        / "smoothed_fused_3d_keypoints.mp4",
-        fps=30,
-    )
+    # ! 因为现在只可视化100frame，所以也没办法合成video了
+    # merge_frames_to_video(
+    #     frame_dir=out_root
+    #     / person_id
+    #     / env_name
+    #     / "smoothed"
+    #     / "smoothed_fused"
+    #     / "vis_together",
+    #     output_video_path=out_root
+    #     / person_id
+    #     / env_name
+    #     / "merged_video"
+    #     / "smoothed_fused_3d_keypoints.mp4",
+    #     fps=30,
+    # )
 
     logger.info(
         f"==== Finished Temporal Smoothing for Person: {person_id}, Env: {env_name} ===="
@@ -547,7 +564,9 @@ def _compare_fused_smoothed_keypoints(
         filtered_smoothed_array = _filter_keypoints_sequence(smoothed_array)
 
         # 创建比较器
-        comparator = KeypointsComparator(filtered_keypoints_array, filtered_smoothed_array)
+        comparator = KeypointsComparator(
+            filtered_keypoints_array, filtered_smoothed_array
+        )
 
         # 获取要评估的关键点索引
         requested_indices = cfg.smooth.get("comparison_keypoint_indices")
@@ -627,7 +646,7 @@ def _compare_fused_with_views(
     view_list: list,
 ):
     """比较融合结果与各个单视角的3D关键点
-    
+
     Args:
         person_env_dir: 人员环境目录
         out_root: 输出根目录
@@ -638,26 +657,28 @@ def _compare_fused_with_views(
     """
     person_id = person_env_dir.parent.name
     env_name = person_env_dir.name
-    
+
     # 检查是否启用对比
     if not all_fused_kpts or not cfg.fuse.get("enable_fused_view_comparison", False):
         logger.info("Fused vs Views comparison is disabled or no data to compare")
         return
-    
+
     logger.info("=" * 70)
-    logger.info(f"Comparing fused keypoints with single-view keypoints for {person_id}/{env_name}")
+    logger.info(
+        f"Comparing fused keypoints with single-view keypoints for {person_id}/{env_name}"
+    )
     logger.info("=" * 70)
-    
+
     try:
         # 1. 准备数据：将字典转换为numpy数组
         sorted_frames = sorted(all_fused_kpts.keys())
-        
+
         # 融合后的关键点 (T, M, 3) - 使用过滤后关键点
         fused_array = _filter_keypoints_sequence(
             np.stack([all_fused_kpts[idx] for idx in sorted_frames], axis=0)
         )
         logger.info(f"Fused keypoints shape: {fused_array.shape}")
-        
+
         # 各视角的关键点
         view_keypoints = {}
         for view in view_list:
@@ -665,84 +686,96 @@ def _compare_fused_with_views(
             for frame_idx in sorted_frames:
                 frame_outputs = all_outputs.get(frame_idx)
                 if frame_outputs is None or view not in frame_outputs:
-                    logger.warning(f"Missing outputs for frame {frame_idx}, view {view}")
+                    logger.warning(
+                        f"Missing outputs for frame {frame_idx}, view {view}"
+                    )
                     continue
-                
+
                 # 优先使用过滤后的关键点；若缺失则从原始关键点现算过滤
                 kpts_3d = frame_outputs[view].get("filtered_pred_keypoints_3d")
                 if kpts_3d is None:
-                    kpts_3d = _normalize_keypoints(frame_outputs[view].get("pred_keypoints_3d"))
+                    kpts_3d = _normalize_keypoints(
+                        frame_outputs[view].get("pred_keypoints_3d")
+                    )
 
                 if kpts_3d is None:
                     logger.warning(
                         f"Missing filtered 3D keypoints for frame {frame_idx}, view {view}"
                     )
                     continue
-                
+
                 view_kpts_list.append(kpts_3d)
-            
+
             if len(view_kpts_list) == len(sorted_frames):
                 view_keypoints[view] = np.stack(view_kpts_list, axis=0)
-                logger.info(f"View '{view}' keypoints shape: {view_keypoints[view].shape}")
+                logger.info(
+                    f"View '{view}' keypoints shape: {view_keypoints[view].shape}"
+                )
             else:
-                logger.warning(f"Incomplete data for view '{view}': {len(view_kpts_list)}/{len(sorted_frames)} frames")
-        
+                logger.warning(
+                    f"Incomplete data for view '{view}': {len(view_kpts_list)}/{len(sorted_frames)} frames"
+                )
+
         if len(view_keypoints) < 2:
             logger.error("Not enough view data for comparison (need at least 2 views)")
             return
-        
+
         # 2. 创建比较器
         comparator = FusedViewComparator(fused_array, view_keypoints)
-        
+
         # 3. 获取要评估的关键点索引
-        requested_indices = cfg.fuse.get(
-            "fused_view_comparison_keypoint_indices"
-        )
+        requested_indices = cfg.fuse.get("fused_view_comparison_keypoint_indices")
         keypoint_indices = _resolve_filtered_keypoint_indices(
             requested_indices=requested_indices,
             filtered_num_points=fused_array.shape[1],
             context_name="fuse.fused_view_comparison_keypoint_indices",
         )
-        
+
         # 4. 计算指标
         metrics = comparator.compute_metrics(keypoint_indices=keypoint_indices)
         logger.info(f"Computed metrics for {len(keypoint_indices)} keypoints")
-        
+
         # 5. 设置输出目录
         comparison_dir = out_root / person_id / env_name / "fused_vs_views_comparison"
         comparison_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # 6. 保存JSON指标
         metrics_path = comparison_dir / "fused_vs_views_metrics.json"
         comparator.export_metrics_json(metrics_path, keypoint_indices=keypoint_indices)
         logger.info(f"✓ Saved metrics to {metrics_path}")
-        
+
         # 7. 生成并保存文本报告
         report_path = comparison_dir / "fused_vs_views_report.txt"
-        report = comparator.generate_report(save_path=report_path, keypoint_indices=keypoint_indices)
+        report = comparator.generate_report(
+            save_path=report_path, keypoint_indices=keypoint_indices
+        )
         logger.info(f"✓ Saved report to {report_path}")
-        
+
         # 8. 打印关键指标摘要
         logger.info("")
         logger.info("Key Metrics Summary:")
         logger.info("  Mean distance to views:")
         for view, dist in metrics["mean_distance_to_views"].items():
             logger.info(f"    {view}: {dist:.6f}")
-        logger.info(f"  Distance to centroid: {metrics['mean_distance_to_centroid']:.6f}")
+        logger.info(
+            f"  Distance to centroid: {metrics['mean_distance_to_centroid']:.6f}"
+        )
         logger.info(f"  Fused jitter: {metrics['fused_jitter']['mean']:.6f}")
         logger.info("")
-        
+
         # 9. 生成可视化图表（如果配置启用）
         if cfg.fuse.get("enable_fused_view_comparison_plots", True):
             logger.info("Generating fused vs views comparison plots...")
             plot_path = comparison_dir / "fused_vs_views_comparison.png"
-            comparator.plot_comparison(save_path=plot_path, keypoint_indices=keypoint_indices)
+            comparator.plot_comparison(
+                save_path=plot_path, keypoint_indices=keypoint_indices
+            )
             logger.info(f"✓ Saved comparison plot to {plot_path}")
-        
+
         logger.info("=" * 70)
         logger.info("✓ Fused vs Views comparison completed successfully")
         logger.info("=" * 70)
-        
+
     except Exception as e:
         logger.error(f"Failed to compare fused with views: {e}", exc_info=True)
 
@@ -814,3 +847,5 @@ def process_single_person_env(
         all_outputs=all_outputs,
         view_list=view_list,
     )
+
+    # * 结束推理一个人的一个环境之后，清空内存

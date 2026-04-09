@@ -5,9 +5,7 @@
 使用 config.py 中定义的默认路径
 """
 import json
-from typing import Dict, List, Optional, Tuple
-
-from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -19,7 +17,11 @@ from .load import (
     load_majority_voted_annotations,
     load_sam3d_keypoints,
 )
-from .angle_calculator import calculate_head_angles, extract_head_keypoints
+from .angle_calculator import (
+    calculate_head_angles,
+    estimate_stable_front_baseline,
+    extract_head_keypoints,
+)
 from .config import (
     OUTPUT_ROOT_SAM3D_VIEWS,
     SAM3D_BODY_RESULTS_ROOT,
@@ -38,7 +40,7 @@ from .config import (
 )
 
 
-def _get_all_sam3d_person_env_pairs(selected_views: List[str]) -> List[Tuple[str, str]]:
+def _get_all_sam3d_person_env_pairs(selected_views: Sequence[str]) -> List[Tuple[str, str]]:
     """获取包含单视角 SAM3D 结果的全部人物-环境组合。"""
     pairs: List[Tuple[str, str]] = []
 
@@ -174,27 +176,51 @@ def run_comparison(
     print(f"  分析帧数: {len(angles)}")
     print(f"  有标注的帧: {len(comparisons)}")
     
-    # 统计匹配率
+    # 仅统计分轴匹配率（Yaw/Pitch）
     if comparisons:
-        total_matches = sum(len(comp["matches"]) for comp in comparisons.values())
-        successful_matches = sum(sum(1 for m in comp["matches"] if m["is_match"]) 
-                               for comp in comparisons.values())
-        match_rate = (successful_matches / total_matches * 100) if total_matches > 0 else 0
+        total_annotations = sum(len(comp["matches"]) for comp in comparisons.values())
+
+        yaw_eval_count = sum(
+            sum(1 for m in comp["matches"] if m.get("yaw_axis_active", False))
+            for comp in comparisons.values()
+        )
+        yaw_match_count = sum(
+            sum(1 for m in comp["matches"] if m.get("yaw_axis_active", False) and m.get("yaw_match", False))
+            for comp in comparisons.values()
+        )
+        yaw_match_rate = (yaw_match_count / yaw_eval_count * 100) if yaw_eval_count > 0 else 0.0
+
+        pitch_eval_count = sum(
+            sum(1 for m in comp["matches"] if m.get("pitch_axis_active", False))
+            for comp in comparisons.values()
+        )
+        pitch_match_count = sum(
+            sum(1 for m in comp["matches"] if m.get("pitch_axis_active", False) and m.get("pitch_match", False))
+            for comp in comparisons.values()
+        )
+        pitch_match_rate = (pitch_match_count / pitch_eval_count * 100) if pitch_eval_count > 0 else 0.0
         
-        print("\n匹配统计:")
-        print(f"  总标注数: {total_matches}")
-        print(f"  匹配数: {successful_matches}")
-        print(f"  匹配率: {match_rate:.1f}%")
+        print("\n分轴匹配统计:")
+        print(f"  总标注数: {total_annotations}")
+        print(f"  左右(Yaw)分轴匹配率: {yaw_match_rate:.1f}% ({yaw_match_count}/{yaw_eval_count})")
+        print(f"  上下(Pitch)分轴匹配率: {pitch_match_rate:.1f}% ({pitch_match_count}/{pitch_eval_count})")
         
         # 显示前5帧的详细结果
         print("\n前5帧的详细结果:")
         for frame_idx, comparison in sorted(list(comparisons.items())[:5]):
             print(f"\n  Frame {frame_idx}:")
             for match in comparison["matches"]:
-                status = "✓" if match["is_match"] else "✗"
-                print(f"    {status} {match['annotation'].label}: "
-                      f"Pitch={match['pitch_value']:6.1f}°, "
-                      f"Yaw={match['yaw_value']:6.1f}°")
+                axis_items = []
+                if match.get("pitch_axis_active", False):
+                    axis_items.append(f"Pitch={'✓' if match.get('pitch_match', False) else '✗'}")
+                if match.get("yaw_axis_active", False):
+                    axis_items.append(f"Yaw={'✓' if match.get('yaw_match', False) else '✗'}")
+                axis_text = ", ".join(axis_items) if axis_items else "No axis active"
+                print(
+                    f"    {match['annotation'].label}: "
+                    f"Pitch={match['pitch_value']:6.1f}°, "
+                    f"Yaw={match['yaw_value']:6.1f}° | {axis_text}"
+                )
     else:
         print("\n✗ 没有找到有标注的帧")
     
@@ -229,40 +255,52 @@ def _estimate_front_baseline_from_angles(
     if not unlabeled_frames:
         return None
 
-    candidates: List[Tuple[float, int, Dict[str, float]]] = []
+    candidate_frames: List[int] = []
+    raw_pitch_vals: List[float] = []
+    yaw_vals: List[float] = []
+
     for frame_idx in unlabeled_frames:
         angles = angles_by_frame.get(frame_idx)
         if angles is None:
             continue
-        score = analyzer._front_score(
-            (angles["pitch"], angles["yaw"])
-        )
-        candidates.append((score, frame_idx, angles))
+        candidate_frames.append(frame_idx)
+        raw_pitch_vals.append(float(angles["pitch"]))
+        yaw_vals.append(float(angles["yaw"]))
 
-    if not candidates:
+    if not candidate_frames:
         return None
 
-    candidates.sort(key=lambda item: item[0])
-    selected_count = max(
-        min_selected_frames,
-        int(len(candidates) * selection_ratio),
-    )
-    selected_count = min(selected_count, max_selected_frames, len(candidates))
-    selected = candidates[:selected_count]
+    raw_pitch_arr = np.asarray(raw_pitch_vals, dtype=np.float64)
+    yaw_arr = np.asarray(yaw_vals, dtype=np.float64)
 
-    mean_pitch = float(np.mean([item[2]["pitch"] for item in selected]))
-    mean_yaw = float(np.mean([item[2]["yaw"] for item in selected]))
+    baseline_pitch, selected_local_idx, candidate_local_idx = estimate_stable_front_baseline(
+        raw_pitch_vals=raw_pitch_arr,
+        yaw_vals=yaw_arr,
+        front_ratio=selection_ratio,
+        min_front_frames=min_selected_frames,
+    )
+
+    if candidate_local_idx.size == 0:
+        return None
+
+    selected_frame_indices = np.asarray(candidate_frames, dtype=np.int64)[selected_local_idx]
+    selected_pitch = raw_pitch_arr[selected_local_idx]
+    selected_yaw = yaw_arr[selected_local_idx]
+
+    mean_pitch = float(np.mean(selected_pitch)) if selected_pitch.size > 0 else 0.0
+    mean_yaw = float(np.mean(selected_yaw)) if selected_yaw.size > 0 else 0.0
 
     return {
         "video_id": video_id,
-        "frame_count": selected_count,
-        "candidate_frame_count": len(candidates),
+        "frame_count": int(selected_frame_indices.size),
+        "candidate_frame_count": int(candidate_local_idx.size),
         "selection_ratio": selection_ratio,
-        "frame_indices": [item[1] for item in selected],
+        "frame_indices": selected_frame_indices.tolist(),
         "mean_angles": {
             "pitch": mean_pitch,
             "yaw": mean_yaw,
         },
+        "robust_front_baseline_pitch": baseline_pitch,
     }
 
 
@@ -283,7 +321,10 @@ def _serialize_comparison(comparison: Dict) -> Dict:
                 "yaw_value": match.get("yaw_value"),
                 "expected_pitch": match.get("expected_pitch"),
                 "expected_yaw": match.get("expected_yaw"),
-                "is_match": bool(match.get("is_match", False)),
+                "pitch_axis_active": bool(match.get("pitch_axis_active", False)),
+                "yaw_axis_active": bool(match.get("yaw_axis_active", False)),
+                "pitch_match": bool(match.get("pitch_match", False)),
+                "yaw_match": bool(match.get("yaw_match", False)),
             }
         )
 
@@ -448,13 +489,32 @@ def run_single_view_comparison(
                     comparisons[frame_idx] = _serialize_comparison(comparison)
 
             total_annotations = sum(len(comp["matches"]) for comp in comparisons.values())
-            total_matches = sum(
-                sum(1 for match in comp["matches"] if match["is_match"])
+
+            yaw_eval_count = sum(
+                sum(1 for m in comp["matches"] if m.get("yaw_axis_active", False))
                 for comp in comparisons.values()
             )
-            match_rate = (
-                total_matches / total_annotations * 100
-                if total_annotations > 0
+            yaw_match_count = sum(
+                sum(1 for m in comp["matches"] if m.get("yaw_axis_active", False) and m.get("yaw_match", False))
+                for comp in comparisons.values()
+            )
+            yaw_match_rate = (
+                yaw_match_count / yaw_eval_count * 100
+                if yaw_eval_count > 0
+                else 0.0
+            )
+
+            pitch_eval_count = sum(
+                sum(1 for m in comp["matches"] if m.get("pitch_axis_active", False))
+                for comp in comparisons.values()
+            )
+            pitch_match_count = sum(
+                sum(1 for m in comp["matches"] if m.get("pitch_axis_active", False) and m.get("pitch_match", False))
+                for comp in comparisons.values()
+            )
+            pitch_match_rate = (
+                pitch_match_count / pitch_eval_count * 100
+                if pitch_eval_count > 0
                 else 0.0
             )
 
@@ -480,8 +540,12 @@ def run_single_view_comparison(
                 "total_frames": len(angles_by_frame),
                 "annotated_frames": len(comparisons),
                 "total_annotations": total_annotations,
-                "total_matches": total_matches,
-                "match_rate": match_rate,
+                "yaw_axis_eval_count": yaw_eval_count,
+                "yaw_axis_match_count": yaw_match_count,
+                "yaw_axis_match_rate": yaw_match_rate,
+                "pitch_axis_eval_count": pitch_eval_count,
+                "pitch_axis_match_count": pitch_match_count,
+                "pitch_axis_match_rate": pitch_match_rate,
                 "angles": {str(k): v for k, v in angles_by_frame.items()},
                 "comparisons": {str(k): v for k, v in comparisons.items()},
             }
@@ -491,7 +555,7 @@ def run_single_view_comparison(
 
             print(
                 f"✓ [{current_view}] 帧数={len(angles_by_frame)}, 标注数={total_annotations}, "
-                f"匹配率={match_rate:.2f}%"
+                f"Yaw分轴={yaw_match_rate:.2f}%, Pitch分轴={pitch_match_rate:.2f}%"
             )
 
             summary.append(
@@ -502,8 +566,12 @@ def run_single_view_comparison(
                     "total_frames": len(angles_by_frame),
                     "annotated_frames": len(comparisons),
                     "total_annotations": total_annotations,
-                    "total_matches": total_matches,
-                    "match_rate": match_rate,
+                    "yaw_axis_eval_count": yaw_eval_count,
+                    "yaw_axis_match_count": yaw_match_count,
+                    "yaw_axis_match_rate": yaw_match_rate,
+                    "pitch_axis_eval_count": pitch_eval_count,
+                    "pitch_axis_match_count": pitch_match_count,
+                    "pitch_axis_match_rate": pitch_match_rate,
                     "output_file": str(output_file),
                 }
             )

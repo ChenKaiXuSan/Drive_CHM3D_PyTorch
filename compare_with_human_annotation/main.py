@@ -26,6 +26,7 @@ from .angle_calculator import (
     KEYPOINT_INDICES,
     LABEL_DIRECTION_MAP,
     calculate_head_angles,
+    estimate_stable_front_baseline,
     direction_match,
     extract_head_keypoints,
 )
@@ -100,12 +101,6 @@ class HeadPoseAnalyzer:
             "pitch": angles.get("pitch", 0.0) - baseline_angles.get("pitch", 0.0),
             "yaw": angles.get("yaw", 0.0) - baseline_angles.get("yaw", 0.0),
         }
-
-    @staticmethod
-    def _front_score(angles: Tuple[float, float]) -> float:
-        """Smaller score means closer to the front pose."""
-        pitch, yaw = angles
-        return abs(pitch) + abs(yaw)
 
     def analyze_sequence(
         self,
@@ -199,7 +194,7 @@ class HeadPoseAnalyzer:
         if not unlabeled_frames:
             return None
 
-        candidate_records: List[Tuple[float, int, Tuple[float, float], np.ndarray]] = []
+        candidate_records: List[Tuple[int, Tuple[float, float], np.ndarray]] = []
 
         for frame_idx in unlabeled_frames:
             npy_path = fused_dir / f"frame_{frame_idx:06d}_fused.npy"
@@ -212,28 +207,45 @@ class HeadPoseAnalyzer:
                 continue
 
             angles = calculate_head_angles(head_kpts)
-            score = self._front_score(angles)
-            candidate_records.append((score, frame_idx, angles, keypoints_3d.astype(np.float64)))
+            candidate_records.append((frame_idx, angles, keypoints_3d.astype(np.float64)))
 
         if not candidate_records:
             return None
 
-        candidate_records.sort(key=lambda item: item[0])
-        selected_count = max(
-            min_selected_frames,
-            int(len(candidate_records) * selection_ratio),
+        frame_indices = np.array([item[0] for item in candidate_records], dtype=np.int64)
+        pitch_values = np.array([item[1][0] for item in candidate_records], dtype=np.float64)
+        yaw_values = np.array([item[1][1] for item in candidate_records], dtype=np.float64)
+
+        robust_ratio = selection_ratio
+        robust_min_frames = min_selected_frames
+        if max_selected_frames is not None:
+            robust_min_frames = min(robust_min_frames, max_selected_frames)
+
+        baseline_pitch, selected_local_idx, candidate_local_idx = estimate_stable_front_baseline(
+            raw_pitch_vals=pitch_values,
+            yaw_vals=yaw_values,
+            front_ratio=robust_ratio,
+            min_front_frames=robust_min_frames,
         )
-        selected_count = min(selected_count, max_selected_frames, len(candidate_records))
 
-        selected_records = candidate_records[:selected_count]
-        keypoints_sum = None
-        angle_values: List[Tuple[float, float, float]] = []
+        if candidate_local_idx.size == 0:
+            return None
+
+        candidate_frame_count = int(candidate_local_idx.size)
+        selected_frame_indices = frame_indices[selected_local_idx] if selected_local_idx.size > 0 else np.array([], dtype=np.int64)
+
+        selected_records = []
         used_frames: List[int] = []
+        keypoints_sum = None
+        angle_values: List[Tuple[float, float]] = []
 
-        for _, frame_idx, angles, keypoints_3d in selected_records:
-            angle_values.append(angles)
+        selected_set = set(int(idx) for idx in selected_frame_indices.tolist())
+        for frame_idx, angles, keypoints_3d in candidate_records:
+            if frame_idx not in selected_set:
+                continue
             used_frames.append(frame_idx)
-
+            angle_values.append(angles)
+            selected_records.append((frame_idx, angles, keypoints_3d))
             if keypoints_sum is None:
                 keypoints_sum = keypoints_3d
             else:
@@ -249,7 +261,7 @@ class HeadPoseAnalyzer:
         return {
             "video_id": video_id,
             "frame_count": len(selected_records),
-            "candidate_frame_count": len(candidate_records),
+            "candidate_frame_count": candidate_frame_count,
             "selection_ratio": selection_ratio,
             "frame_indices": used_frames,
             "mean_keypoints_3d": mean_keypoints.tolist(),
@@ -257,6 +269,7 @@ class HeadPoseAnalyzer:
                 "pitch": mean_pitch,
                 "yaw": mean_yaw,
             },
+            "robust_front_baseline_pitch": baseline_pitch,
         }
 
     def compare_with_annotations(
@@ -312,6 +325,10 @@ class HeadPoseAnalyzer:
             pitch_match = direction_match(pitch_value, expected_pitch_dir, threshold_deg)
             yaw_match = direction_match(yaw_value, expected_yaw_dir, threshold_deg)
             is_match = pitch_match and yaw_match
+
+            # 分轴语义：只在该标签涉及该轴时参与该轴评估
+            pitch_axis_active = expected_pitch_dir != 0
+            yaw_axis_active = expected_yaw_dir != 0
             
             matches.append({
                 "annotation": annotation,
@@ -319,6 +336,10 @@ class HeadPoseAnalyzer:
                 "yaw_value": yaw_value,
                 "expected_pitch": expected_pitch_dir,
                 "expected_yaw": expected_yaw_dir,
+                "pitch_axis_active": pitch_axis_active,
+                "yaw_axis_active": yaw_axis_active,
+                "pitch_match": pitch_match,
+                "yaw_match": yaw_match,
                 "is_match": is_match,
             })
         

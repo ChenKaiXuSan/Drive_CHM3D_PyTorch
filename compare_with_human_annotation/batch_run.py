@@ -3,6 +3,7 @@
 """
 批量处理所有人物和环境，生成论文级别的汇总报告
 """
+
 from pathlib import Path
 import json
 from collections import defaultdict
@@ -29,21 +30,21 @@ def get_all_person_env_pairs(smoothed: bool = False):
     fused_root = FUSED_NPZ_ROOT
     fused_subdir = "smoothed_fused_npz" if smoothed else "fused_npz"
     pairs = []
-    
+
     for person_dir in sorted(fused_root.iterdir()):
         if not person_dir.is_dir():
             continue
         person_id = person_dir.name
-        
+
         for env_dir in sorted(person_dir.iterdir()):
             if not env_dir.is_dir():
                 continue
             env_jp = env_dir.name
-            
+
             fused_dir = env_dir / fused_subdir
             if fused_dir.exists() and any(fused_dir.glob("frame_*_fused.npy")):
                 pairs.append((person_id, env_jp))
-    
+
     return pairs
 
 
@@ -56,7 +57,7 @@ def run_single_comparison(
 ):
     """
     运行单个 person-env 的比较
-    
+
     Returns:
         {
             'person_id': str,
@@ -75,13 +76,13 @@ def run_single_comparison(
         env_en = env_jp
     fused_dir = get_fused_dir(person_id, env_jp, smoothed=smoothed)
     video_id = f"{person_id}_{env_en}"
-
+    # TODO 这个方法不用了，要删除掉
     front_baseline = analyzer.estimate_front_baseline(
         video_id=video_id,
         fused_dir=fused_dir,
     )
     baseline_angles = front_baseline["mean_angles"] if front_baseline else None
-    
+
     # 分析
     results = analyzer.analyze_sequence_with_annotations(
         video_id=video_id,
@@ -89,41 +90,43 @@ def run_single_comparison(
         threshold_deg=threshold_deg,
         baseline_angles=baseline_angles,
     )
-    
+
     angles = results["angles"]
     comparisons = results["comparisons"]
-    
+
     # 统计
     total_frames = len(angles)
     annotated_frames = len(comparisons)
-    
+
     # 按方向统计
     by_direction = defaultdict(lambda: {"total": 0, "matched": 0, "rate": 0.0})
     total_annotations = 0
     total_matches = 0
-    
+
     for comparison in comparisons.values():
         for match in comparison["matches"]:
             label = match["annotation"].label.lower()
             if label not in by_direction:
                 by_direction[label] = {"total": 0, "matched": 0, "rate": 0.0}
-            
+
             by_direction[label]["total"] += 1
             total_annotations += 1
-            
+
             if match["is_match"]:
                 by_direction[label]["matched"] += 1
                 total_matches += 1
-    
+
     # 计算匹配率
-    match_rate = (total_matches / total_annotations * 100) if total_annotations > 0 else 0
-    
+    match_rate = (
+        (total_matches / total_annotations * 100) if total_annotations > 0 else 0
+    )
+
     # 计算每个方向的匹配率
     for direction in by_direction:
         total = by_direction[direction]["total"]
         matched = by_direction[direction]["matched"]
         by_direction[direction]["rate"] = (matched / total * 100) if total > 0 else 0
-    
+
     return {
         "person_id": person_id,
         "env_jp": env_jp,
@@ -147,7 +150,7 @@ def generate_paper_report(
 ):
     """
     生成论文级别的汇总报告
-    
+
     Args:
         all_results: 所有比较结果的列表
         output_file: 输出文件路径
@@ -155,67 +158,89 @@ def generate_paper_report(
     """
     output_file = Path(output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    
+
     with output_file.open("w", encoding="utf-8") as f:
         # 标题
         f.write("=" * 80 + "\n")
         f.write(f"{report_title}\n")
         f.write("=" * 80 + "\n\n")
-        
+
         # 摘要统计
         f.write("## 1. 总体统计\n\n")
-        
+
         total_frames = sum(r["total_frames"] for r in all_results)
         total_annotated = sum(r["annotated_frames"] for r in all_results)
         total_annotations = sum(r["total_annotations"] for r in all_results)
         total_matches = sum(r["total_matches"] for r in all_results)
-        overall_rate = (total_matches / total_annotations * 100) if total_annotations > 0 else 0
-        
+        overall_rate = (
+            (total_matches / total_annotations * 100) if total_annotations > 0 else 0
+        )
+
         f.write(f"数据集规模：{len(all_results)} 个人-环境组合\n")
         f.write(f"总帧数：{total_frames:,}\n")
-        f.write(f"有标注的帧：{total_annotated:,} ({100*total_annotated/total_frames:.1f}%)\n")
+        f.write(
+            f"有标注的帧：{total_annotated:,} ({100 * total_annotated / total_frames:.1f}%)\n"
+        )
         f.write(f"总标注数：{total_annotations:,}\n")
         f.write(f"匹配数：{total_matches:,}\n")
         f.write(f"**总体匹配率：{overall_rate:.1f}%**\n\n")
-        
+
         # 按环境分类统计
         f.write("## 2. 按环境分类统计\n\n")
-        
-        env_stats = defaultdict(lambda: {
-            "count": 0,
-            "total_annotations": 0,
-            "total_matches": 0,
-        })
-        
+
+        env_stats = defaultdict(
+            lambda: {
+                "count": 0,
+                "total_annotations": 0,
+                "total_matches": 0,
+            }
+        )
+
         for result in all_results:
             env_en = result["env_en"]
             env_stats[env_en]["count"] += 1
             env_stats[env_en]["total_annotations"] += result["total_annotations"]
             env_stats[env_en]["total_matches"] += result["total_matches"]
-        
+
         f.write("| 环境 | 人数 | 标注数 | 匹配数 | 匹配率 |\n")
         f.write("|------|------|--------|--------|--------|\n")
-        
+
         for env_en in sorted(env_stats.keys()):
             stat = env_stats[env_en]
-            rate = (stat["total_matches"] / stat["total_annotations"] * 100) if stat["total_annotations"] > 0 else 0
-            f.write(f"| {env_en:12s} | {stat['count']:4d} | {stat['total_annotations']:6d} | {stat['total_matches']:6d} | {rate:6.1f}% |\n")
-        
+            rate = (
+                (stat["total_matches"] / stat["total_annotations"] * 100)
+                if stat["total_annotations"] > 0
+                else 0
+            )
+            f.write(
+                f"| {env_en:12s} | {stat['count']:4d} | {stat['total_annotations']:6d} | {stat['total_matches']:6d} | {rate:6.1f}% |\n"
+            )
+
         f.write("\n")
 
         # baseline统计
         f.write("## 3. Front Baseline 统计\n\n")
 
-        baseline_rows = [r for r in all_results if r.get("front_baseline") and r["front_baseline"].get("mean_angles")]
+        baseline_rows = [
+            r
+            for r in all_results
+            if r.get("front_baseline") and r["front_baseline"].get("mean_angles")
+        ]
         if baseline_rows:
-            baseline_pitch = [r["front_baseline"]["mean_angles"]["pitch"] for r in baseline_rows]
-            baseline_yaw = [r["front_baseline"]["mean_angles"]["yaw"] for r in baseline_rows]
-            selected_counts = [r["front_baseline"]["frame_count"] for r in baseline_rows]
+            baseline_pitch = [
+                r["front_baseline"]["mean_angles"]["pitch"] for r in baseline_rows
+            ]
+            baseline_yaw = [
+                r["front_baseline"]["mean_angles"]["yaw"] for r in baseline_rows
+            ]
+            selected_counts = [
+                r["front_baseline"]["frame_count"] for r in baseline_rows
+            ]
 
             f.write(f"可用 baseline 数量：{len(baseline_rows)} / {len(all_results)}\n")
             f.write(
-                f"平均 baseline angles：Pitch={sum(baseline_pitch)/len(baseline_pitch):.2f}°, "
-                f"Yaw={sum(baseline_yaw)/len(baseline_yaw):.2f}°\n"
+                f"平均 baseline angles：Pitch={sum(baseline_pitch) / len(baseline_pitch):.2f}°, "
+                f"Yaw={sum(baseline_yaw) / len(baseline_yaw):.2f}°\n"
             )
             f.write(
                 f"baseline 选帧数范围：{min(selected_counts)} ~ {max(selected_counts)}\n"
@@ -224,61 +249,77 @@ def generate_paper_report(
             f.write("没有可用的 baseline 统计。\n")
 
         f.write("\n")
-        
+
         # 按方向分类统计
         f.write("## 4. 按头部转动方向分类统计\n\n")
-        
-        direction_stats = defaultdict(lambda: {
-            "total": 0,
-            "matched": 0,
-        })
-        
+
+        direction_stats = defaultdict(
+            lambda: {
+                "total": 0,
+                "matched": 0,
+            }
+        )
+
         for result in all_results:
             for direction, stat in result["by_direction"].items():
                 direction_stats[direction]["total"] += stat["total"]
                 direction_stats[direction]["matched"] += stat["matched"]
-        
+
         f.write("| 方向 | 标注数 | 匹配数 | 匹配率 |\n")
         f.write("|------|--------|--------|--------|\n")
-        
+
         for direction in sorted(direction_stats.keys()):
             stat = direction_stats[direction]
             rate = (stat["matched"] / stat["total"] * 100) if stat["total"] > 0 else 0
-            f.write(f"| {direction:8s} | {stat['total']:6d} | {stat['matched']:6d} | {rate:6.1f}% |\n")
-        
+            f.write(
+                f"| {direction:8s} | {stat['total']:6d} | {stat['matched']:6d} | {rate:6.1f}% |\n"
+            )
+
         f.write("\n")
-        
+
         # 详细结果表
         f.write("## 5. 详细结果表（按人物和环境）\n\n")
-        
+
         f.write("| 人物 ID | 环境 | 总帧数 | 有标注 | 标注数 | 匹配数 | 匹配率 |\n")
         f.write("|---------|------|--------|--------|--------|--------|--------|\n")
-        
+
         for result in sorted(all_results, key=lambda x: (x["person_id"], x["env_en"])):
-            f.write(f"| {result['person_id']:6s} | {result['env_en']:12s} | "
-                   f"{result['total_frames']:6d} | {result['annotated_frames']:6d} | "
-                   f"{result['total_annotations']:6d} | {result['total_matches']:6d} | "
-                   f"{result['match_rate']:6.1f}% |\n")
-        
+            f.write(
+                f"| {result['person_id']:6s} | {result['env_en']:12s} | "
+                f"{result['total_frames']:6d} | {result['annotated_frames']:6d} | "
+                f"{result['total_annotations']:6d} | {result['total_matches']:6d} | "
+                f"{result['match_rate']:6.1f}% |\n"
+            )
+
         f.write("\n")
-        
+
         # 讨论
         f.write("## 6. 讨论\n\n")
-        f.write(f"本研究对 {len(all_results)} 个人-环境组合进行了头部姿态估计与人工标注的比较。\n")
-        f.write(f"在阈值 τ={threshold_deg:g}° 的条件下，总体匹配率为 {overall_rate:.1f}%。\n\n")
-        
+        f.write(
+            f"本研究对 {len(all_results)} 个人-环境组合进行了头部姿态估计与人工标注的比较。\n"
+        )
+        f.write(
+            f"在阈值 τ={threshold_deg:g}° 的条件下，总体匹配率为 {overall_rate:.1f}%。\n\n"
+        )
+
         f.write("### 按环境分析\n\n")
         for env_en in sorted(env_stats.keys()):
             stat = env_stats[env_en]
-            rate = (stat["total_matches"] / stat["total_annotations"] * 100) if stat["total_annotations"] > 0 else 0
-            f.write(f"- **{env_en}**：{rate:.1f}% (基于 {stat['total_annotations']} 个标注)\n")
-        
+            rate = (
+                (stat["total_matches"] / stat["total_annotations"] * 100)
+                if stat["total_annotations"] > 0
+                else 0
+            )
+            f.write(
+                f"- **{env_en}**：{rate:.1f}% (基于 {stat['total_annotations']} 个标注)\n"
+            )
+
         f.write("\n### 按方向分析\n\n")
         for direction in sorted(direction_stats.keys()):
             stat = direction_stats[direction]
             rate = (stat["matched"] / stat["total"] * 100) if stat["total"] > 0 else 0
             f.write(f"- **{direction}**：{rate:.1f}% (基于 {stat['total']} 个标注)\n")
-        
+
         f.write("\n")
         f.write("=" * 80 + "\n")
 
@@ -303,7 +344,11 @@ def _run_batch_comparison(
         env_en = ENVIRONMENTS.get(env_jp)
         if env_en is None:
             env_en = env_jp
-        print(f"[{idx}/{len(pairs)}] {person_id} - {env_jp} ({env_en})...", end=" ", flush=True)
+        print(
+            f"[{idx}/{len(pairs)}] {person_id} - {env_jp} ({env_en})...",
+            end=" ",
+            flush=True,
+        )
 
         try:
             result = run_single_comparison(
@@ -428,7 +473,11 @@ def run_batch_comparison_by_annotator(threshold_deg=DEFAULT_THRESHOLD):
     annotations_by_annotator = load_annotations_by_annotator(annotation_file)
     print(f"✓ 已加载 {len(annotations_by_annotator)} 个视频的标注")
 
-    first_video_annotations = next(iter(annotations_by_annotator.values())) if annotations_by_annotator else []
+    first_video_annotations = (
+        next(iter(annotations_by_annotator.values()))
+        if annotations_by_annotator
+        else []
+    )
     num_annotators = len(first_video_annotations)
     print(f"✓ 检测到 {num_annotators} 位标注者")
 
@@ -441,14 +490,16 @@ def run_batch_comparison_by_annotator(threshold_deg=DEFAULT_THRESHOLD):
         print(f"{'=' * 80}")
 
         for annotator_idx in range(num_annotators):
-            print(f"\n{'='*80}")
+            print(f"\n{'=' * 80}")
             print(f"处理标注者 {annotator_idx + 1}/{num_annotators}")
-            print(f"{'='*80}")
+            print(f"{'=' * 80}")
 
             annotations_for_this_annotator = {}
             for video_id, labels_list in annotations_by_annotator.items():
                 if annotator_idx < len(labels_list):
-                    annotations_for_this_annotator[video_id] = labels_list[annotator_idx]
+                    annotations_for_this_annotator[video_id] = labels_list[
+                        annotator_idx
+                    ]
 
             output_root_annotator = source_root / f"annotator_{annotator_idx + 1}"
 
@@ -459,7 +510,3 @@ def run_batch_comparison_by_annotator(threshold_deg=DEFAULT_THRESHOLD):
                 report_title=f"头部姿态估计与人工标注比较 - 论文报告（标注者 {annotator_idx + 1}，{source_label}）",
                 smoothed=smoothed,
             )
-
-
-if __name__ == "__main__":
-    run_batch_comparison()

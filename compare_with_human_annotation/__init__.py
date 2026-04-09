@@ -15,21 +15,21 @@
     >>> from compare_with_human_annotation import HeadPoseAnalyzer
     >>> from compare_with_human_annotation import load_head_movement_annotations
     >>> from pathlib import Path
-    >>> 
+    >>>
     >>> # 加载标注
     >>> annotations = load_head_movement_annotations(
     ...     Path("/workspace/data/annotation/label/full.json")
     ... )
-    >>> 
+    >>>
     >>> # 创建分析器
     >>> analyzer = HeadPoseAnalyzer(annotation_dict=annotations)
-    >>> 
+    >>>
     >>> # 分析并比较
     >>> results = analyzer.analyze_sequence_with_annotations(
     ...     video_id="01_day_high",
     ...     fused_dir=Path("/workspace/data/head3d_fuse_results/01/昼多い/fused_npz")
     ... )
-    >>> 
+    >>>
     >>> # 查看比较结果
     >>> for frame_idx, comparison in results["comparisons"].items():
     ...     print(f"Frame {frame_idx}: {comparison['matches']}")
@@ -56,6 +56,7 @@ from .angle_calculator import (
     direction_match,
     extract_head_keypoints,
 )
+
 __version__ = "1.0.0"
 __author__ = "Kaixu Chen"
 __email__ = "chenkaixusan@gmail.com"
@@ -69,8 +70,8 @@ def __getattr__(name):
         return HeadPoseAnalyzer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 __all__ = [
-    "HeadPoseAnalyzer",
     "KEYPOINT_INDICES",
     "LABEL_DIRECTION_MAP",
     "HeadMovementLabel",
@@ -80,7 +81,6 @@ __all__ = [
     "load_multi_annotator_annotations",
     "get_annotation_for_frame",
     "calculate_head_angles",
-    "classify_label",
     "direction_match",
     "extract_head_keypoints",
     "get_all_annotations_for_frame",
