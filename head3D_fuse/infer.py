@@ -22,6 +22,7 @@ Date      	By	Comments
 
 import json
 import logging
+import gc
 from pathlib import Path
 from typing import Optional, cast
 
@@ -849,3 +850,13 @@ def process_single_person_env(
     )
 
     # * 结束推理一个人的一个环境之后，清空内存
+    # 释放当前 person/env 的大对象，避免长流程中内存持续增长
+    del all_fused_kpts
+    del all_outputs
+    del keypoints_array
+    del smoothed_array
+    del frame_triplets
+    del report
+
+    # 触发 Python 垃圾回收
+    gc.collect()
