@@ -4,11 +4,19 @@ set -u
 # Run all compare_with_human_annotation combinations:
 #   - mode: fused / single_view
 #   - annotation_mode: majority / by_annotator
+#   - threshold: one or more values supplied through THRESHOLDS
 #
 # Usage:
 #   bash bash/run_all_compare_with_human_annotation.sh
-#   bash bash/run_all_compare_with_human_annotation.sh run.threshold=7.5 run.view=all
+#   THRESHOLDS="5.0 7.5 10.0" bash bash/run_all_compare_with_human_annotation.sh run.view=all
 #   MAX_JOBS=2 bash bash/run_all_compare_with_human_annotation.sh
+
+# Select what to run here or via environment variables.
+# Supported separators: spaces or commas.
+# Example:
+#   THRESHOLDS="5.0,7.5"
+#   RUN_MODES="fused single_view"
+#   RUN_ANNOTATION_MODES="majority by_annotator"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -25,20 +33,62 @@ if ! [[ "$MAX_JOBS" =~ ^[1-9][0-9]*$ ]]; then
 	MAX_JOBS=4
 fi
 
-declare -a CASES=(
-	"fused majority"
-	"fused by_annotator"
-	"single_view majority"
-	"single_view by_annotator"
-)
+normalize_list() {
+	local value="$1"
+	echo "${value//,/ }"
+}
+
+RUN_MODES_RAW="$(normalize_list "${RUN_MODES:-fused single_view}")"
+RUN_ANNOTATION_MODES_RAW="$(normalize_list "${RUN_ANNOTATION_MODES:-majority by_annotator}")"
+THRESHOLDS_RAW="$(normalize_list "${THRESHOLDS:-5.0}")"
+
+read -r -a RUN_MODES_LIST <<< "$RUN_MODES_RAW"
+read -r -a RUN_ANNOTATION_MODES_LIST <<< "$RUN_ANNOTATION_MODES_RAW"
+read -r -a THRESHOLDS_LIST <<< "$THRESHOLDS_RAW"
+
+if [[ ${#RUN_MODES_LIST[@]} -eq 0 ]]; then
+	echo "No modes configured. Set RUN_MODES, for example: RUN_MODES=\"fused single_view\""
+	exit 1
+fi
+
+if [[ ${#RUN_ANNOTATION_MODES_LIST[@]} -eq 0 ]]; then
+	echo "No annotation modes configured. Set RUN_ANNOTATION_MODES, for example: RUN_ANNOTATION_MODES=\"majority by_annotator\""
+	exit 1
+fi
+
+if [[ ${#THRESHOLDS_LIST[@]} -eq 0 ]]; then
+	echo "No thresholds configured. Set THRESHOLDS, for example: THRESHOLDS=\"5.0 7.5 10.0\""
+	exit 1
+fi
 
 EXTRA_OVERRIDES=("$@")
+declare -a EXTRA_OVERRIDES_FILTERED=()
+
+format_threshold_tag() {
+	local threshold="$1"
+	echo "${threshold//./p}deg"
+}
+
+filter_threshold_overrides() {
+	local override
+	for override in "${EXTRA_OVERRIDES[@]}"; do
+		if [[ "$override" == run.threshold=* ]]; then
+			continue
+		fi
+		EXTRA_OVERRIDES_FILTERED+=("$override")
+	done
+}
+
+filter_threshold_overrides
 
 echo "============================================================"
 echo "Compare With Human Annotation - All Combinations"
 echo "Root: ${ROOT_DIR}"
 echo "Log dir: ${LOG_DIR}"
 echo "Parallel workers: ${MAX_JOBS}"
+echo "Modes: ${RUN_MODES_LIST[*]}"
+echo "Annotation modes: ${RUN_ANNOTATION_MODES_LIST[*]}"
+echo "Thresholds: ${THRESHOLDS_LIST[*]}"
 echo "Start: $(date '+%F %T')"
 echo "============================================================"
 
@@ -47,21 +97,24 @@ declare -a CASE_NAMES=()
 declare -A PID_TO_CASE=()
 
 run_case() {
-	local mode="$1"
-	local annotation_mode="$2"
-	local case_name="${mode}__${annotation_mode}"
+	local threshold="$1"
+	local mode="$2"
+	local annotation_mode="$3"
+	local threshold_tag
+	threshold_tag="$(format_threshold_tag "$threshold")"
+	local case_name="${threshold_tag}__${mode}__${annotation_mode}"
 	local log_file="${LOG_DIR}/${STAMP}_${case_name}.log"
 	local status_file="${STATUS_DIR}/${case_name}.exit"
 
-	local -a cmd=(python -m compare_with_human_annotation.main "run.mode=${mode}" "run.annotation_mode=${annotation_mode}")
+	local -a cmd=(python -m compare_with_human_annotation.main "run.mode=${mode}" "run.annotation_mode=${annotation_mode}" "run.threshold=${threshold}")
 
 	if [[ "$mode" == "single_view" ]]; then
 		# Keep single_view default explicit for readability; can be overridden by CLI args.
 		cmd+=("run.view=all")
 	fi
 
-	if [[ ${#EXTRA_OVERRIDES[@]} -gt 0 ]]; then
-		cmd+=("${EXTRA_OVERRIDES[@]}")
+	if [[ ${#EXTRA_OVERRIDES_FILTERED[@]} -gt 0 ]]; then
+		cmd+=("${EXTRA_OVERRIDES_FILTERED[@]}")
 	fi
 
 	{
@@ -97,12 +150,16 @@ wait_for_slot() {
 	done
 }
 
-for item in "${CASES[@]}"; do
-	mode="${item%% *}"
-	annotation_mode="${item##* }"
-	wait_for_slot
+for threshold in "${THRESHOLDS_LIST[@]}"; do
 	echo
-	run_case "$mode" "$annotation_mode"
+	echo "[THRESHOLD] ${threshold}"
+	for mode in "${RUN_MODES_LIST[@]}"; do
+		for annotation_mode in "${RUN_ANNOTATION_MODES_LIST[@]}"; do
+			wait_for_slot
+			echo
+			run_case "$threshold" "$mode" "$annotation_mode"
+		done
+	done
 done
 
 echo

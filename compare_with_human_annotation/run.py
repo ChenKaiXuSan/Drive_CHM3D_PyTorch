@@ -102,7 +102,11 @@ def run_comparison(
     annotation_file = get_annotation_file(cfg)
     fused_dir = get_fused_dir(cfg, person_id, env_jp)
     env_en = env_mapping.get(env_jp, env_jp)
-    output_dir = get_output_dir(person_id, env_en, output_root=get_output_root(cfg))
+    output_dir = get_output_dir(
+        person_id,
+        env_en,
+        output_root=get_output_root(cfg, threshold),
+    )
 
     print("\n路径:")
     print(f"  标注文件: {annotation_file}")
@@ -531,7 +535,7 @@ def run_single_view_comparison(
 
         print(f"\n---- 标注来源: {annotation_name} ----")
 
-        sam3d_output_root = get_single_view_output_root(cfg)
+        sam3d_output_root = get_single_view_output_root(cfg, threshold)
         if annotation_mode == "majority":
             output_root = sam3d_output_root / "majority"
         else:

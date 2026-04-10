@@ -20,6 +20,11 @@ def _as_path(value) -> Path:
     return Path(str(value))
 
 
+def format_threshold_folder(threshold_deg: float) -> str:
+    """格式化阈值目录名，例如 threshold_5deg 或 threshold_7.5deg。"""
+    return f"threshold_{threshold_deg:g}deg"
+
+
 def get_annotation_file(cfg: DictConfig) -> Path:
     return _as_path(cfg.paths.annotation_file)
 
@@ -32,12 +37,15 @@ def get_sam3d_root(cfg: DictConfig) -> Path:
     return _as_path(cfg.paths.sam3d_body_results_root)
 
 
-def get_output_root(cfg: DictConfig) -> Path:
-    return _as_path(cfg.paths.output_root)
+def get_output_root(cfg: DictConfig, threshold_deg: Optional[float] = None) -> Path:
+    root = _as_path(cfg.paths.output_root)
+    if threshold_deg is None:
+        return root
+    return root / format_threshold_folder(float(threshold_deg))
 
 
-def get_single_view_output_root(cfg: DictConfig) -> Path:
-    return _as_path(cfg.output.single_view.root)
+def get_single_view_output_root(cfg: DictConfig, threshold_deg: Optional[float] = None) -> Path:
+    return get_output_root(cfg, threshold_deg) / "single_view"
 
 
 def get_fused_dir(
@@ -54,8 +62,14 @@ def get_sam3d_view_dir(cfg: DictConfig, person_id: str, env_jp: str, view: str) 
     return get_sam3d_root(cfg) / person_id / env_jp / view
 
 
-def get_output_source_root(cfg: DictConfig, smoothed: bool = False) -> Path:
-    return _as_path(cfg.output.fused.smoothed if smoothed else cfg.output.fused.raw)
+def get_output_source_root(
+    cfg: DictConfig,
+    smoothed: bool = False,
+    threshold_deg: Optional[float] = None,
+) -> Path:
+    return get_output_root(cfg, threshold_deg) / "fused" / (
+        "smoothed" if smoothed else "raw"
+    )
 
 
 def get_sam3d_output_dir(

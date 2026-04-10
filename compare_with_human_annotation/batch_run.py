@@ -543,7 +543,7 @@ def run_batch_comparison(
     for smoothed in (False, True):
         source_name = "smoothed" if smoothed else "raw"
         source_label = "平滑" if smoothed else "未平滑"
-        output_root = get_output_source_root(cfg, smoothed=smoothed)
+        output_root = get_output_source_root(cfg, smoothed=smoothed, threshold_deg=threshold_deg)
 
         print(f"\n{'=' * 80}")
         print(f"开始比较来源: {source_label} ({source_name})")
@@ -584,7 +584,10 @@ def run_batch_comparison_majority_vote(
 
     for smoothed in (False, True):
         source_label = "平滑" if smoothed else "未平滑"
-        output_root = get_output_source_root(cfg, smoothed=smoothed) / "majority"
+        output_root = (
+            get_output_source_root(cfg, smoothed=smoothed, threshold_deg=threshold_deg)
+            / "majority"
+        )
 
         print(f"\n{'=' * 80}")
         print(f"开始比较来源: {source_label}")
@@ -633,7 +636,10 @@ def run_batch_comparison_by_annotator(
 
     for smoothed in (False, True):
         source_label = "平滑" if smoothed else "未平滑"
-        source_root = get_output_source_root(cfg, smoothed=smoothed) / "by_annotator"
+        source_root = (
+            get_output_source_root(cfg, smoothed=smoothed, threshold_deg=threshold_deg)
+            / "by_annotator"
+        )
         print(f"\n{'=' * 80}")
         print(f"开始比较来源: {source_label}")
         print(f"输出根目录: {source_root}")
