@@ -27,11 +27,7 @@ STAMP="$(date +"%Y%m%d_%H%M%S")"
 STATUS_DIR="${LOG_DIR}/.${STAMP}_status"
 mkdir -p "$STATUS_DIR"
 
-MAX_JOBS="${MAX_JOBS:-4}"
-if ! [[ "$MAX_JOBS" =~ ^[1-9][0-9]*$ ]]; then
-	echo "Invalid MAX_JOBS=${MAX_JOBS}, fallback to 4"
-	MAX_JOBS=4
-fi
+MAX_JOBS="${MAX_JOBS:-auto}"
 
 normalize_list() {
 	local value="$1"
@@ -40,7 +36,7 @@ normalize_list() {
 
 RUN_MODES_RAW="$(normalize_list "${RUN_MODES:-fused single_view}")"
 RUN_ANNOTATION_MODES_RAW="$(normalize_list "${RUN_ANNOTATION_MODES:-majority by_annotator}")"
-THRESHOLDS_RAW="$(normalize_list "${THRESHOLDS:-5.0}")"
+THRESHOLDS_RAW="$(normalize_list "${THRESHOLDS:-0 5 10 15 20}")"
 
 read -r -a RUN_MODES_LIST <<< "$RUN_MODES_RAW"
 read -r -a RUN_ANNOTATION_MODES_LIST <<< "$RUN_ANNOTATION_MODES_RAW"
@@ -80,6 +76,44 @@ filter_threshold_overrides() {
 }
 
 filter_threshold_overrides
+
+auto_configure_max_jobs() {
+	local total_cases=${#THRESHOLDS_LIST[@]}
+	total_cases=$((total_cases * ${#RUN_MODES_LIST[@]} * ${#RUN_ANNOTATION_MODES_LIST[@]}))
+
+	local cpu_count=1
+	if command -v nproc >/dev/null 2>&1; then
+		cpu_count="$(nproc)"
+	fi
+
+	if ! [[ "$cpu_count" =~ ^[1-9][0-9]*$ ]]; then
+		cpu_count=1
+	fi
+
+	# 对 CPU 密集型任务默认使用约 50% 核心，至少 1 个。
+	local suggested=$((cpu_count / 2))
+	if [[ "$suggested" -lt 1 ]]; then
+		suggested=1
+	fi
+
+	# 不超过总任务数。
+	if [[ "$suggested" -gt "$total_cases" ]]; then
+		suggested="$total_cases"
+	fi
+
+	if [[ "$suggested" -lt 1 ]]; then
+		suggested=1
+	fi
+
+	echo "$suggested"
+}
+
+if [[ "$MAX_JOBS" == "auto" ]]; then
+	MAX_JOBS="$(auto_configure_max_jobs)"
+elif ! [[ "$MAX_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+	echo "Invalid MAX_JOBS=${MAX_JOBS}, fallback to auto"
+	MAX_JOBS="$(auto_configure_max_jobs)"
+fi
 
 echo "============================================================"
 echo "Compare With Human Annotation - All Combinations"

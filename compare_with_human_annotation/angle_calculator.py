@@ -104,27 +104,33 @@ def calculate_head_angles(
         pitch_deg = 0.0
 
     # ===== 2. 计算Yaw（偏航角）=====
-    # Use the ear-center -> eye-center -> nose line projected onto XY plane,
-    # then measure the signed angle against +Y axis.
-    nose = head_kpts["nose"]
-    left_eye = head_kpts["left_eye"]
-    right_eye = head_kpts["right_eye"]
-    left_ear = head_kpts["left_ear"]
-    right_ear = head_kpts["right_ear"]
-
-    eye_center = (left_eye + right_eye) / 2.0
-    ear_center = (left_ear + right_ear) / 2.0
-
-    # This combines the two connected segments ear->eye and eye->nose.
-    forward_line = (eye_center - ear_center) + (nose - eye_center)
-    forward_xy = np.array([forward_line[0], forward_line[1]], dtype=np.float64)
-    if np.linalg.norm(forward_xy) < 1e-6:
-        yaw_deg = 0.0
-    else:
-        yaw = np.arctan2(forward_xy[0], forward_xy[1])
-        yaw_deg = np.degrees(yaw)
+    yaw_deg = calculate_yaw_from_nose_ears(head_kpts)
 
     return pitch_deg, yaw_deg
+
+
+def calculate_yaw_from_nose_ears(head_kpts: Dict[str, np.ndarray]) -> float:
+    """Calculate yaw from the nose and ear-center geometry on a single frame."""
+    nose = np.asarray(head_kpts["nose"], dtype=np.float64)
+    left_ear = np.asarray(head_kpts["left_ear"], dtype=np.float64)
+    right_ear = np.asarray(head_kpts["right_ear"], dtype=np.float64)
+
+    if (
+        np.any(np.isnan(nose))
+        or np.any(np.isnan(left_ear))
+        or np.any(np.isnan(right_ear))
+    ):
+        return float("nan")
+
+    ear_center = (left_ear + right_ear) / 2.0
+    forward_line = nose - ear_center
+    forward_xy = np.array([forward_line[0], forward_line[1]], dtype=np.float64)
+
+    if np.linalg.norm(forward_xy) < 1e-6:
+        return float("nan")
+
+    yaw = np.arctan2(forward_xy[0], forward_xy[1])
+    return float(np.degrees(yaw))
 
 
 def calculate_pitch_from_nose_ears_plane(
@@ -262,3 +268,25 @@ def direction_match(angle_value: float, expected_dir: int, threshold: float) -> 
     if expected_dir < 0:
         return angle_value < -threshold
     return abs(angle_value) <= threshold
+
+
+def classify_label(pitch: float, yaw: float, threshold: float) -> str:
+    """根据 pitch/yaw 与阈值的关系输出离散方向标签。"""
+    pitch_dir = 0
+    yaw_dir = 0
+
+    if pitch > threshold:
+        pitch_dir = 1
+    elif pitch < -threshold:
+        pitch_dir = -1
+
+    if yaw > threshold:
+        yaw_dir = 1
+    elif yaw < -threshold:
+        yaw_dir = -1
+
+    for label, (expected_pitch, expected_yaw) in LABEL_DIRECTION_MAP.items():
+        if expected_pitch == pitch_dir and expected_yaw == yaw_dir:
+            return label
+
+    return "front"

@@ -10,7 +10,7 @@ defaults:
 log_path: logs/compare_with_human_annotation/${now:%Y-%m-%d}/${now:%H-%M-%S}
 paths:
   data_root: /workspace/data
-  fused_npz_root: ${paths.data_root}/head3d_fuse_results_old
+  fused_npz_root: ${paths.data_root}/head3d_fuse_results
   sam3d_body_results_root: ${paths.data_root}/sam3d_body_results_right_full
   annotation_file: ${paths.data_root}/annotation/label/full.json
   output_root: ${paths.data_root}/compare_with_human_annotation_results

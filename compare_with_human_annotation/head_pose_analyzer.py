@@ -16,6 +16,7 @@ from .angle_calculator import (
     LABEL_DIRECTION_MAP,
     calculate_head_angles,
     estimate_stable_front_baseline,
+    classify_label,
     direction_match,
     extract_head_keypoints,
 )
@@ -308,11 +309,13 @@ class HeadPoseAnalyzer:
 
             pitch_value = adjusted_angles.get("pitch", 0)
             yaw_value = adjusted_angles.get("yaw", 0)
+            predicted_label = classify_label(pitch_value, yaw_value, threshold_deg)
 
             # 检查pitch和yaw是否都匹配
             pitch_match = direction_match(pitch_value, expected_pitch_dir, threshold_deg)
             yaw_match = direction_match(yaw_value, expected_yaw_dir, threshold_deg)
             is_match = pitch_match and yaw_match
+            label_match = predicted_label == label
 
             # 分轴语义：只在该标签涉及该轴时参与该轴评估
             pitch_axis_active = expected_pitch_dir != 0
@@ -329,6 +332,8 @@ class HeadPoseAnalyzer:
                 "pitch_match": pitch_match,
                 "yaw_match": yaw_match,
                 "is_match": is_match,
+                "predicted_label": predicted_label,
+                "label_match": label_match,
             })
         
         return {

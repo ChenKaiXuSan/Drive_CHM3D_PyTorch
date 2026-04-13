@@ -90,6 +90,24 @@ def _calculate_axis_comparison_stats(comparisons) -> dict:
     }
 
 
+def _calculate_discrete_comparison_stats(comparisons) -> dict:
+    """计算离散标签比较统计与比例。"""
+    total_annotations = sum(len(comp.get("matches", [])) for comp in comparisons.values())
+    discrete_match_count = sum(
+        sum(1 for m in comp.get("matches", []) if m.get("label_match", False))
+        for comp in comparisons.values()
+    )
+    discrete_match_rate = (
+        (discrete_match_count / total_annotations * 100.0)
+        if total_annotations > 0
+        else 0.0
+    )
+    return {
+        "discrete_match_count": discrete_match_count,
+        "discrete_match_rate": discrete_match_rate,
+    }
+
+
 def get_all_person_env_pairs(smoothed: bool = False, cfg: Optional[DictConfig] = None):
     """获取所有可用的 person 和 environment 组合。"""
     cfg = cfg or load_config()
@@ -177,6 +195,9 @@ def run_single_comparison(
 
     # 按方向统计
     by_direction = defaultdict(lambda: {"total": 0, "matched": 0, "rate": 0.0})
+    by_direction_discrete = defaultdict(
+        lambda: {"total": 0, "matched": 0, "rate": 0.0}
+    )
     total_annotations = 0
     total_matches = 0
 
@@ -187,11 +208,15 @@ def run_single_comparison(
                 by_direction[label] = {"total": 0, "matched": 0, "rate": 0.0}
 
             by_direction[label]["total"] += 1
+            by_direction_discrete[label]["total"] += 1
             total_annotations += 1
 
             if match["is_match"]:
                 by_direction[label]["matched"] += 1
                 total_matches += 1
+
+            if match.get("label_match", False):
+                by_direction_discrete[label]["matched"] += 1
 
     # 计算匹配率
     match_rate = (
@@ -199,6 +224,7 @@ def run_single_comparison(
     )
 
     axis_stats = _calculate_axis_comparison_stats(comparisons)
+    discrete_stats = _calculate_discrete_comparison_stats(comparisons)
 
     # 计算每个方向的匹配率
     for direction in by_direction:
@@ -206,12 +232,23 @@ def run_single_comparison(
         matched = by_direction[direction]["matched"]
         by_direction[direction]["rate"] = (matched / total * 100) if total > 0 else 0
 
+    for direction in by_direction_discrete:
+        total = by_direction_discrete[direction]["total"]
+        matched = by_direction_discrete[direction]["matched"]
+        by_direction_discrete[direction]["rate"] = (
+            (matched / total * 100) if total > 0 else 0
+        )
+
     return {
+        "source": "fused",
+        "annotation_mode": "unknown",
+        "annotation_source": "unknown",
+        "view": "fused",
+        "video_id": video_id,
+        "threshold_deg": threshold_deg,
         "person_id": person_id,
         "env_jp": env_jp,
         "env_en": env_en,
-        "front_baseline": front_baseline,
-        "baseline": baseline_angles,
         "total_frames": total_frames,
         "annotated_frames": annotated_frames,
         "annotated_frame_ratio": annotated_frame_ratio,
@@ -232,7 +269,10 @@ def run_single_comparison(
         "pitch_axis_match_ratio_in_all_annotations": axis_stats[
             "pitch_axis_match_ratio_in_all_annotations"
         ],
+        "discrete_match_count": discrete_stats["discrete_match_count"],
+        "discrete_match_rate": discrete_stats["discrete_match_rate"],
         "by_direction": dict(by_direction),
+        "by_direction_discrete": dict(by_direction_discrete),
     }
 
 
@@ -277,12 +317,18 @@ def generate_paper_report(
         total_yaw_match = sum(r.get("yaw_axis_match_count", 0) for r in all_results)
         total_pitch_eval = sum(r.get("pitch_axis_eval_count", 0) for r in all_results)
         total_pitch_match = sum(r.get("pitch_axis_match_count", 0) for r in all_results)
+        total_discrete_match = sum(r.get("discrete_match_count", 0) for r in all_results)
 
         yaw_axis_match_rate = (
             (total_yaw_match / total_yaw_eval * 100) if total_yaw_eval > 0 else 0
         )
         pitch_axis_match_rate = (
             (total_pitch_match / total_pitch_eval * 100) if total_pitch_eval > 0 else 0
+        )
+        discrete_match_rate = (
+            (total_discrete_match / total_annotations * 100)
+            if total_annotations > 0
+            else 0
         )
 
         f.write(f"数据集规模：{len(all_results)} 个人-环境组合\n")
@@ -299,6 +345,9 @@ def generate_paper_report(
         )
         f.write(
             f"Pitch 分轴匹配率：{pitch_axis_match_rate:.1f}% ({total_pitch_match}/{total_pitch_eval})\n\n"
+        )
+        f.write(
+            f"离散标签匹配率：{discrete_match_rate:.1f}% ({total_discrete_match}/{total_annotations})\n\n"
         )
 
         # 按环境分类统计
@@ -447,6 +496,8 @@ def _run_batch_comparison(
     threshold_deg: Optional[float] = None,
     report_title="头部姿态估计与人工标注比较 - 论文报告",
     smoothed: bool = False,
+    annotation_mode: str = "raw",
+    annotation_source: str = "full_annotations",
 ):
     """执行批量比较并写入指定输出目录。"""
     threshold_deg = float(
@@ -482,6 +533,10 @@ def _run_batch_comparison(
                 smoothed=smoothed,
                 cfg=cfg,
             )
+
+            result["annotation_mode"] = annotation_mode
+            result["annotation_source"] = annotation_source
+
             all_results.append(result)
 
             output_dir = get_output_dir(person_id, env_en, output_root=output_root)
@@ -557,6 +612,8 @@ def run_batch_comparison(
             threshold_deg=threshold_deg,
             report_title=f"头部姿态估计与人工标注比较 - 论文报告（{source_label}）",
             smoothed=smoothed,
+            annotation_mode="raw",
+            annotation_source="full_annotations",
         )
 
 
@@ -601,6 +658,8 @@ def run_batch_comparison_majority_vote(
             threshold_deg=threshold_deg,
             report_title=f"头部姿态估计与人工标注比较 - 论文报告（3位标注者多数投票，{source_label}）",
             smoothed=smoothed,
+            annotation_mode="majority",
+            annotation_source="majority",
         )
 
 
@@ -666,4 +725,6 @@ def run_batch_comparison_by_annotator(
                 threshold_deg=threshold_deg,
                 report_title=f"头部姿态估计与人工标注比较 - 论文报告（标注者 {annotator_idx + 1}，{source_label}）",
                 smoothed=smoothed,
+                annotation_mode="by_annotator",
+                annotation_source=f"annotator_{annotator_idx + 1}",
             )
