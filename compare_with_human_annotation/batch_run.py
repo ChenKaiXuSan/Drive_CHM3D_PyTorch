@@ -74,6 +74,31 @@ def _calculate_axis_comparison_stats(comparisons) -> dict:
     pitch_axis_match_ratio_in_all_annotations = (
         pitch_match_count / total_annotations * 100.0 if total_annotations > 0 else 0.0
     )
+    axis_eval_count = yaw_eval_count + pitch_eval_count
+    axis_match_count = yaw_match_count + pitch_match_count
+    axis_micro_match_rate = (
+        axis_match_count / axis_eval_count * 100.0 if axis_eval_count > 0 else 0.0
+    )
+
+    by_direction_axis = defaultdict(lambda: {"total": 0, "matched": 0, "rate": 0.0})
+    for comp in comparisons.values():
+        for m in comp.get("matches", []):
+            annotation = m.get("annotation")
+            if annotation is None:
+                continue
+            label = annotation.label.lower()
+            by_direction_axis[label]["total"] += 1
+            matched = False
+            if m.get("yaw_axis_active", False):
+                matched = bool(m.get("yaw_match", False))
+            elif m.get("pitch_axis_active", False):
+                matched = bool(m.get("pitch_match", False))
+            if matched:
+                by_direction_axis[label]["matched"] += 1
+
+    for direction, stats in by_direction_axis.items():
+        total = stats["total"]
+        stats["rate"] = (stats["matched"] / total * 100.0) if total > 0 else 0.0
 
     return {
         "total_annotations": total_annotations,
@@ -87,24 +112,10 @@ def _calculate_axis_comparison_stats(comparisons) -> dict:
         "pitch_axis_match_rate": pitch_match_rate,
         "pitch_axis_eval_ratio": pitch_axis_eval_ratio,
         "pitch_axis_match_ratio_in_all_annotations": pitch_axis_match_ratio_in_all_annotations,
-    }
-
-
-def _calculate_discrete_comparison_stats(comparisons) -> dict:
-    """计算离散标签比较统计与比例。"""
-    total_annotations = sum(len(comp.get("matches", [])) for comp in comparisons.values())
-    discrete_match_count = sum(
-        sum(1 for m in comp.get("matches", []) if m.get("label_match", False))
-        for comp in comparisons.values()
-    )
-    discrete_match_rate = (
-        (discrete_match_count / total_annotations * 100.0)
-        if total_annotations > 0
-        else 0.0
-    )
-    return {
-        "discrete_match_count": discrete_match_count,
-        "discrete_match_rate": discrete_match_rate,
+        "axis_eval_count": axis_eval_count,
+        "axis_match_count": axis_match_count,
+        "axis_micro_match_rate": axis_micro_match_rate,
+        "by_direction_axis": dict(by_direction_axis),
     }
 
 
@@ -151,9 +162,10 @@ def run_single_comparison(
             'total_frames': int,
             'annotated_frames': int,
             'total_annotations': int,
-            'total_matches': int,
-            'match_rate': float,
-            'by_direction': dict
+            'axis_eval_count': int,
+            'axis_match_count': int,
+            'axis_micro_match_rate': float,
+            'by_direction_axis': dict
         }
     """
     cfg = cfg or load_config()
@@ -193,52 +205,13 @@ def run_single_comparison(
         (annotated_frames / total_frames * 100.0) if total_frames > 0 else 0.0
     )
 
-    # 按方向统计
-    by_direction = defaultdict(lambda: {"total": 0, "matched": 0, "rate": 0.0})
-    by_direction_discrete = defaultdict(
-        lambda: {"total": 0, "matched": 0, "rate": 0.0}
-    )
     total_annotations = 0
-    total_matches = 0
 
     for comparison in comparisons.values():
         for match in comparison["matches"]:
-            label = match["annotation"].label.lower()
-            if label not in by_direction:
-                by_direction[label] = {"total": 0, "matched": 0, "rate": 0.0}
-
-            by_direction[label]["total"] += 1
-            by_direction_discrete[label]["total"] += 1
             total_annotations += 1
 
-            if match["is_match"]:
-                by_direction[label]["matched"] += 1
-                total_matches += 1
-
-            if match.get("label_match", False):
-                by_direction_discrete[label]["matched"] += 1
-
-    # 计算匹配率
-    match_rate = (
-        (total_matches / total_annotations * 100) if total_annotations > 0 else 0
-    )
-
     axis_stats = _calculate_axis_comparison_stats(comparisons)
-    discrete_stats = _calculate_discrete_comparison_stats(comparisons)
-
-    # 计算每个方向的匹配率
-    for direction in by_direction:
-        total = by_direction[direction]["total"]
-        matched = by_direction[direction]["matched"]
-        by_direction[direction]["rate"] = (matched / total * 100) if total > 0 else 0
-
-    for direction in by_direction_discrete:
-        total = by_direction_discrete[direction]["total"]
-        matched = by_direction_discrete[direction]["matched"]
-        by_direction_discrete[direction]["rate"] = (
-            (matched / total * 100) if total > 0 else 0
-        )
-
     return {
         "source": "fused",
         "annotation_mode": "unknown",
@@ -253,8 +226,6 @@ def run_single_comparison(
         "annotated_frames": annotated_frames,
         "annotated_frame_ratio": annotated_frame_ratio,
         "total_annotations": total_annotations,
-        "total_matches": total_matches,
-        "match_rate": match_rate,
         "yaw_axis_eval_count": axis_stats["yaw_axis_eval_count"],
         "yaw_axis_match_count": axis_stats["yaw_axis_match_count"],
         "yaw_axis_match_rate": axis_stats["yaw_axis_match_rate"],
@@ -269,10 +240,11 @@ def run_single_comparison(
         "pitch_axis_match_ratio_in_all_annotations": axis_stats[
             "pitch_axis_match_ratio_in_all_annotations"
         ],
-        "discrete_match_count": discrete_stats["discrete_match_count"],
-        "discrete_match_rate": discrete_stats["discrete_match_rate"],
-        "by_direction": dict(by_direction),
-        "by_direction_discrete": dict(by_direction_discrete),
+        "axis_eval_count": axis_stats["axis_eval_count"],
+        "axis_match_count": axis_stats["axis_match_count"],
+        "axis_micro_match_rate": axis_stats["axis_micro_match_rate"],
+        "by_direction": axis_stats["by_direction_axis"],
+        "by_direction_axis": axis_stats["by_direction_axis"],
     }
 
 
@@ -305,9 +277,10 @@ def generate_paper_report(
         total_frames = sum(r["total_frames"] for r in all_results)
         total_annotated = sum(r["annotated_frames"] for r in all_results)
         total_annotations = sum(r["total_annotations"] for r in all_results)
-        total_matches = sum(r["total_matches"] for r in all_results)
-        overall_rate = (
-            (total_matches / total_annotations * 100) if total_annotations > 0 else 0
+        total_axis_eval = sum(r.get("axis_eval_count", 0) for r in all_results)
+        total_axis_match = sum(r.get("axis_match_count", 0) for r in all_results)
+        axis_micro_match_rate = (
+            (total_axis_match / total_axis_eval * 100) if total_axis_eval > 0 else 0
         )
         overall_annotated_frame_ratio = (
             (total_annotated / total_frames * 100) if total_frames > 0 else 0
@@ -317,20 +290,12 @@ def generate_paper_report(
         total_yaw_match = sum(r.get("yaw_axis_match_count", 0) for r in all_results)
         total_pitch_eval = sum(r.get("pitch_axis_eval_count", 0) for r in all_results)
         total_pitch_match = sum(r.get("pitch_axis_match_count", 0) for r in all_results)
-        total_discrete_match = sum(r.get("discrete_match_count", 0) for r in all_results)
-
         yaw_axis_match_rate = (
             (total_yaw_match / total_yaw_eval * 100) if total_yaw_eval > 0 else 0
         )
         pitch_axis_match_rate = (
             (total_pitch_match / total_pitch_eval * 100) if total_pitch_eval > 0 else 0
         )
-        discrete_match_rate = (
-            (total_discrete_match / total_annotations * 100)
-            if total_annotations > 0
-            else 0
-        )
-
         f.write(f"数据集规模：{len(all_results)} 个人-环境组合\n")
         f.write(f"总帧数：{total_frames:,}\n")
         f.write(
@@ -338,16 +303,14 @@ def generate_paper_report(
         )
         f.write(f"有标注帧占比：{overall_annotated_frame_ratio:.1f}%\n")
         f.write(f"总标注数：{total_annotations:,}\n")
-        f.write(f"匹配数：{total_matches:,}\n")
-        f.write(f"**总体匹配率：{overall_rate:.1f}%**\n\n")
+        f.write(f"分轴评估数：{total_axis_eval:,}\n")
+        f.write(f"分轴匹配数：{total_axis_match:,}\n")
+        f.write(f"**分轴微平均总匹配率（最终指标）：{axis_micro_match_rate:.1f}%**\n\n")
         f.write(
             f"Yaw 分轴匹配率：{yaw_axis_match_rate:.1f}% ({total_yaw_match}/{total_yaw_eval})\n"
         )
         f.write(
             f"Pitch 分轴匹配率：{pitch_axis_match_rate:.1f}% ({total_pitch_match}/{total_pitch_eval})\n\n"
-        )
-        f.write(
-            f"离散标签匹配率：{discrete_match_rate:.1f}% ({total_discrete_match}/{total_annotations})\n\n"
         )
 
         # 按环境分类统计
@@ -356,29 +319,29 @@ def generate_paper_report(
         env_stats = defaultdict(
             lambda: {
                 "count": 0,
-                "total_annotations": 0,
-                "total_matches": 0,
+                "axis_eval_count": 0,
+                "axis_match_count": 0,
             }
         )
 
         for result in all_results:
             env_en = result["env_en"]
             env_stats[env_en]["count"] += 1
-            env_stats[env_en]["total_annotations"] += result["total_annotations"]
-            env_stats[env_en]["total_matches"] += result["total_matches"]
+            env_stats[env_en]["axis_eval_count"] += result.get("axis_eval_count", 0)
+            env_stats[env_en]["axis_match_count"] += result.get("axis_match_count", 0)
 
-        f.write("| 环境 | 人数 | 标注数 | 匹配数 | 匹配率 |\n")
-        f.write("|------|------|--------|--------|--------|\n")
+        f.write("| 环境 | 人数 | 分轴评估数 | 分轴匹配数 | 分轴微平均匹配率 |\n")
+        f.write("|------|------|------------|------------|------------------|\n")
 
         for env_en in sorted(env_stats.keys()):
             stat = env_stats[env_en]
             rate = (
-                (stat["total_matches"] / stat["total_annotations"] * 100)
-                if stat["total_annotations"] > 0
+                (stat["axis_match_count"] / stat["axis_eval_count"] * 100)
+                if stat["axis_eval_count"] > 0
                 else 0
             )
             f.write(
-                f"| {env_en:12s} | {stat['count']:4d} | {stat['total_annotations']:6d} | {stat['total_matches']:6d} | {rate:6.1f}% |\n"
+                f"| {env_en:12s} | {stat['count']:4d} | {stat['axis_eval_count']:10d} | {stat['axis_match_count']:10d} | {rate:16.1f}% |\n"
             )
 
         f.write("\n")
@@ -426,7 +389,8 @@ def generate_paper_report(
         )
 
         for result in all_results:
-            for direction, stat in result["by_direction"].items():
+            direction_source = result.get("by_direction_axis", result.get("by_direction", {}))
+            for direction, stat in direction_source.items():
                 direction_stats[direction]["total"] += stat["total"]
                 direction_stats[direction]["matched"] += stat["matched"]
 
@@ -445,15 +409,15 @@ def generate_paper_report(
         # 详细结果表
         f.write("## 5. 详细结果表（按人物和环境）\n\n")
 
-        f.write("| 人物 ID | 环境 | 总帧数 | 有标注 | 标注数 | 匹配数 | 匹配率 |\n")
-        f.write("|---------|------|--------|--------|--------|--------|--------|\n")
+        f.write("| 人物 ID | 环境 | 总帧数 | 有标注 | 分轴评估数 | 分轴匹配数 | 分轴微平均 |\n")
+        f.write("|---------|------|--------|--------|------------|------------|------------|\n")
 
         for result in sorted(all_results, key=lambda x: (x["person_id"], x["env_en"])):
             f.write(
                 f"| {result['person_id']:6s} | {result['env_en']:12s} | "
                 f"{result['total_frames']:6d} | {result['annotated_frames']:6d} | "
-                f"{result['total_annotations']:6d} | {result['total_matches']:6d} | "
-                f"{result['match_rate']:6.1f}% |\n"
+                f"{result.get('axis_eval_count', 0):10d} | {result.get('axis_match_count', 0):10d} | "
+                f"{result.get('axis_micro_match_rate', 0.0):10.1f}% |\n"
             )
 
         f.write("\n")
@@ -464,19 +428,19 @@ def generate_paper_report(
             f"本研究对 {len(all_results)} 个人-环境组合进行了头部姿态估计与人工标注的比较。\n"
         )
         f.write(
-            f"在阈值 τ={threshold_deg:g}° 的条件下，总体匹配率为 {overall_rate:.1f}%。\n\n"
+            f"在阈值 τ={threshold_deg:g}° 的条件下，分轴微平均总匹配率为 {axis_micro_match_rate:.1f}%。\n\n"
         )
 
         f.write("### 按环境分析\n\n")
         for env_en in sorted(env_stats.keys()):
             stat = env_stats[env_en]
             rate = (
-                (stat["total_matches"] / stat["total_annotations"] * 100)
-                if stat["total_annotations"] > 0
+                (stat["axis_match_count"] / stat["axis_eval_count"] * 100)
+                if stat["axis_eval_count"] > 0
                 else 0
             )
             f.write(
-                f"- **{env_en}**：{rate:.1f}% (基于 {stat['total_annotations']} 个标注)\n"
+                f"- **{env_en}**：{rate:.1f}% (基于 {stat['axis_eval_count']} 个分轴评估)\n"
             )
 
         f.write("\n### 按方向分析\n\n")
@@ -544,7 +508,7 @@ def _run_batch_comparison(
             with result_file.open("w", encoding="utf-8") as f:
                 json.dump(result, f, indent=2, ensure_ascii=False)
 
-            print(f"✓ {result['match_rate']:.1f}%")
+            print(f"✓ 分轴微平均={result.get('axis_micro_match_rate', 0.0):.1f}%")
         except Exception as e:
             print(f"✗ 错误: {e}")
 

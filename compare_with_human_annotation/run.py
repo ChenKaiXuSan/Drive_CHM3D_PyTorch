@@ -374,8 +374,6 @@ def _serialize_comparison(comparison: Dict) -> Dict:
                 "pitch_match": bool(match.get("pitch_match", False)),
                 "yaw_match": bool(match.get("yaw_match", False)),
                 "is_match": bool(match.get("is_match", False)),
-                "predicted_label": match.get("predicted_label"),
-                "label_match": bool(match.get("label_match", False)),
             }
         )
 
@@ -435,6 +433,28 @@ def _calculate_axis_comparison_stats(comparisons: Dict[int, Dict]) -> Dict[str, 
     pitch_axis_match_ratio_in_all_annotations = (
         pitch_match_count / total_annotations * 100.0 if total_annotations > 0 else 0.0
     )
+    axis_eval_count = yaw_eval_count + pitch_eval_count
+    axis_match_count = yaw_match_count + pitch_match_count
+    axis_micro_match_rate = (
+        axis_match_count / axis_eval_count * 100.0 if axis_eval_count > 0 else 0.0
+    )
+
+    by_direction_axis = defaultdict(lambda: {"total": 0, "matched": 0, "rate": 0.0})
+    for comp in comparisons.values():
+        for m in comp.get("matches", []):
+            label = str(m.get("annotation", {}).get("label", "unknown")).lower()
+            by_direction_axis[label]["total"] += 1
+            matched = False
+            if m.get("yaw_axis_active", False):
+                matched = bool(m.get("yaw_match", False))
+            elif m.get("pitch_axis_active", False):
+                matched = bool(m.get("pitch_match", False))
+            if matched:
+                by_direction_axis[label]["matched"] += 1
+
+    for direction, stats in by_direction_axis.items():
+        total = stats["total"]
+        stats["rate"] = (stats["matched"] / total * 100.0) if total > 0 else 0.0
 
     return {
         "total_annotations": total_annotations,
@@ -448,64 +468,10 @@ def _calculate_axis_comparison_stats(comparisons: Dict[int, Dict]) -> Dict[str, 
         "pitch_axis_eval_ratio": pitch_axis_eval_ratio,
         "yaw_axis_match_ratio_in_all_annotations": yaw_axis_match_ratio_in_all_annotations,
         "pitch_axis_match_ratio_in_all_annotations": pitch_axis_match_ratio_in_all_annotations,
-    }
-
-
-def _calculate_discrete_comparison_stats(comparisons: Dict[int, Dict]) -> Dict[str, object]:
-    """计算离散标签比较统计。"""
-    total_annotations = sum(len(comp.get("matches", [])) for comp in comparisons.values())
-    discrete_match_count = sum(
-        sum(1 for m in comp.get("matches", []) if m.get("label_match", False))
-        for comp in comparisons.values()
-    )
-    discrete_match_rate = (
-        discrete_match_count / total_annotations * 100.0 if total_annotations > 0 else 0.0
-    )
-
-    by_direction_discrete = defaultdict(lambda: {"total": 0, "matched": 0, "rate": 0.0})
-    for comp in comparisons.values():
-        for m in comp.get("matches", []):
-            label = str(m.get("annotation", {}).get("label", "unknown")).lower()
-            by_direction_discrete[label]["total"] += 1
-            if m.get("label_match", False):
-                by_direction_discrete[label]["matched"] += 1
-
-    for direction, stats in by_direction_discrete.items():
-        total = stats["total"]
-        stats["rate"] = (stats["matched"] / total * 100.0) if total > 0 else 0.0
-
-    return {
-        "discrete_match_count": discrete_match_count,
-        "discrete_match_rate": discrete_match_rate,
-        "by_direction_discrete": dict(by_direction_discrete),
-    }
-
-
-def _calculate_strict_comparison_stats(comparisons: Dict[int, Dict]) -> Dict[str, object]:
-    """计算严格匹配统计（两轴联合 is_match）。"""
-    total_annotations = sum(len(comp.get("matches", [])) for comp in comparisons.values())
-    total_matches = sum(
-        sum(1 for m in comp.get("matches", []) if m.get("is_match", False))
-        for comp in comparisons.values()
-    )
-    match_rate = (total_matches / total_annotations * 100.0) if total_annotations > 0 else 0.0
-
-    by_direction = defaultdict(lambda: {"total": 0, "matched": 0, "rate": 0.0})
-    for comp in comparisons.values():
-        for m in comp.get("matches", []):
-            label = str(m.get("annotation", {}).get("label", "unknown")).lower()
-            by_direction[label]["total"] += 1
-            if m.get("is_match", False):
-                by_direction[label]["matched"] += 1
-
-    for direction, stats in by_direction.items():
-        total = stats["total"]
-        stats["rate"] = (stats["matched"] / total * 100.0) if total > 0 else 0.0
-
-    return {
-        "total_matches": total_matches,
-        "match_rate": match_rate,
-        "by_direction": dict(by_direction),
+        "axis_eval_count": axis_eval_count,
+        "axis_match_count": axis_match_count,
+        "axis_micro_match_rate": axis_micro_match_rate,
+        "by_direction_axis": dict(by_direction_axis),
     }
 
 
@@ -655,8 +621,6 @@ def run_single_view_comparison(
                     comparisons[frame_idx] = _serialize_comparison(comparison)
 
             axis_stats = _calculate_axis_comparison_stats(comparisons)
-            strict_stats = _calculate_strict_comparison_stats(comparisons)
-            discrete_stats = _calculate_discrete_comparison_stats(comparisons)
             total_annotations = axis_stats["total_annotations"]
             yaw_eval_count = axis_stats["yaw_axis_eval_count"]
             yaw_match_count = axis_stats["yaw_axis_match_count"]
@@ -664,6 +628,7 @@ def run_single_view_comparison(
             pitch_eval_count = axis_stats["pitch_axis_eval_count"]
             pitch_match_count = axis_stats["pitch_axis_match_count"]
             pitch_match_rate = axis_stats["pitch_axis_match_rate"]
+            axis_micro_match_rate = axis_stats["axis_micro_match_rate"]
             annotated_frame_ratio = (
                 len(comparisons) / len(angles_by_frame) * 100.0
                 if len(angles_by_frame) > 0
@@ -693,8 +658,9 @@ def run_single_view_comparison(
                 "annotated_frames": len(comparisons),
                 "annotated_frame_ratio": annotated_frame_ratio,
                 "total_annotations": total_annotations,
-                "total_matches": strict_stats["total_matches"],
-                "match_rate": strict_stats["match_rate"],
+                "axis_eval_count": axis_stats["axis_eval_count"],
+                "axis_match_count": axis_stats["axis_match_count"],
+                "axis_micro_match_rate": axis_micro_match_rate,
                 "yaw_axis_eval_count": yaw_eval_count,
                 "yaw_axis_match_count": yaw_match_count,
                 "yaw_axis_match_rate": yaw_match_rate,
@@ -709,10 +675,8 @@ def run_single_view_comparison(
                 "pitch_axis_match_ratio_in_all_annotations": axis_stats[
                     "pitch_axis_match_ratio_in_all_annotations"
                 ],
-                "discrete_match_count": discrete_stats["discrete_match_count"],
-                "discrete_match_rate": discrete_stats["discrete_match_rate"],
-                "by_direction": strict_stats["by_direction"],
-                "by_direction_discrete": discrete_stats["by_direction_discrete"],
+                "by_direction": axis_stats["by_direction_axis"],
+                "by_direction_axis": axis_stats["by_direction_axis"],
                 "angles": {str(k): v for k, v in angles_by_frame.items()},
                 "comparisons": {str(k): v for k, v in comparisons.items()},
             }
@@ -724,7 +688,7 @@ def run_single_view_comparison(
                 f"✓ [{current_view}] 帧数={len(angles_by_frame)}, 标注数={total_annotations}, "
                 f"有标注帧占比={annotated_frame_ratio:.2f}%, "
                 f"Yaw分轴={yaw_match_rate:.2f}%, Pitch分轴={pitch_match_rate:.2f}%, "
-                f"离散匹配={discrete_stats['discrete_match_rate']:.2f}%"
+                f"分轴微平均={axis_micro_match_rate:.2f}%"
             )
 
             summary.append(
@@ -736,8 +700,9 @@ def run_single_view_comparison(
                     "annotated_frames": len(comparisons),
                     "annotated_frame_ratio": annotated_frame_ratio,
                     "total_annotations": total_annotations,
-                    "total_matches": strict_stats["total_matches"],
-                    "match_rate": strict_stats["match_rate"],
+                    "axis_eval_count": axis_stats["axis_eval_count"],
+                    "axis_match_count": axis_stats["axis_match_count"],
+                    "axis_micro_match_rate": axis_micro_match_rate,
                     "yaw_axis_eval_count": yaw_eval_count,
                     "yaw_axis_match_count": yaw_match_count,
                     "yaw_axis_match_rate": yaw_match_rate,
@@ -752,10 +717,8 @@ def run_single_view_comparison(
                     "pitch_axis_match_ratio_in_all_annotations": axis_stats[
                         "pitch_axis_match_ratio_in_all_annotations"
                     ],
-                    "discrete_match_count": discrete_stats["discrete_match_count"],
-                    "discrete_match_rate": discrete_stats["discrete_match_rate"],
-                    "by_direction": strict_stats["by_direction"],
-                    "by_direction_discrete": discrete_stats["by_direction_discrete"],
+                    "by_direction": axis_stats["by_direction_axis"],
+                    "by_direction_axis": axis_stats["by_direction_axis"],
                     "output_file": str(output_file),
                 }
             )

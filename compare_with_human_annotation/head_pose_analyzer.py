@@ -16,7 +16,6 @@ from .angle_calculator import (
     LABEL_DIRECTION_MAP,
     calculate_head_angles,
     estimate_stable_front_baseline,
-    classify_label,
     direction_match,
     extract_head_keypoints,
 )
@@ -90,6 +89,36 @@ class HeadPoseAnalyzer:
             "pitch": angles.get("pitch", 0.0) - baseline_angles.get("pitch", 0.0),
             "yaw": angles.get("yaw", 0.0) - baseline_angles.get("yaw", 0.0),
         }
+
+    @staticmethod
+    def _select_single_annotation(
+        frame_annotations: List[HeadMovementLabel],
+    ) -> Optional[HeadMovementLabel]:
+        """Select exactly one annotation for a frame when overlaps exist.
+
+        Priority rule is deterministic:
+        1) Keep only supported labels.
+        2) Prefer shorter ranges (more specific segment).
+        3) Tie-break by earlier start/end frame and label text.
+        """
+        if not frame_annotations:
+            return None
+
+        valid_annotations = [
+            ann for ann in frame_annotations if ann.label.lower() in LABEL_DIRECTION_MAP
+        ]
+        if not valid_annotations:
+            return None
+
+        def _annotation_key(annotation: HeadMovementLabel):
+            return (
+                annotation.end_frame - annotation.start_frame,
+                annotation.start_frame,
+                annotation.end_frame,
+                annotation.label.lower(),
+            )
+
+        return min(valid_annotations, key=_annotation_key)
 
     def analyze_sequence(
         self,
@@ -287,7 +316,7 @@ class HeadPoseAnalyzer:
         if video_id not in self.annotation_dict:
             return None
             
-        # 获取该帧的所有标注
+        # 获取该帧的所有标注，并收敛为单标签评估口径
         frame_annotations = get_all_annotations_for_frame(
             self.annotation_dict[video_id], frame_idx
         )
@@ -296,26 +325,27 @@ class HeadPoseAnalyzer:
         if not frame_annotations:
             return None
 
+        selected_annotation = self._select_single_annotation(frame_annotations)
+        if selected_annotation is None:
+            return None
+
         adjusted_angles = self._apply_baseline(angles, baseline_angles)
         
-        # 与每个标注比较
+        # 与单个标注比较（每帧唯一标签）
         matches = []
+        frame_annotations = [selected_annotation]
         for annotation in frame_annotations:
             label = annotation.label.lower()
-            if label not in LABEL_DIRECTION_MAP:
-                continue
 
             expected_pitch_dir, expected_yaw_dir = LABEL_DIRECTION_MAP[label]
 
             pitch_value = adjusted_angles.get("pitch", 0)
             yaw_value = adjusted_angles.get("yaw", 0)
-            predicted_label = classify_label(pitch_value, yaw_value, threshold_deg)
 
             # 检查pitch和yaw是否都匹配
             pitch_match = direction_match(pitch_value, expected_pitch_dir, threshold_deg)
             yaw_match = direction_match(yaw_value, expected_yaw_dir, threshold_deg)
             is_match = pitch_match and yaw_match
-            label_match = predicted_label == label
 
             # 分轴语义：只在该标签涉及该轴时参与该轴评估
             pitch_axis_active = expected_pitch_dir != 0
@@ -332,8 +362,6 @@ class HeadPoseAnalyzer:
                 "pitch_match": pitch_match,
                 "yaw_match": yaw_match,
                 "is_match": is_match,
-                "predicted_label": predicted_label,
-                "label_match": label_match,
             })
         
         return {

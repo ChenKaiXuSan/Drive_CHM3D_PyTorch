@@ -36,7 +36,7 @@ normalize_list() {
 
 RUN_MODES_RAW="$(normalize_list "${RUN_MODES:-fused single_view}")"
 RUN_ANNOTATION_MODES_RAW="$(normalize_list "${RUN_ANNOTATION_MODES:-majority by_annotator}")"
-THRESHOLDS_RAW="$(normalize_list "${THRESHOLDS:-0 5 10 15 20}")"
+THRESHOLDS_RAW="$(normalize_list "${THRESHOLDS:-0 1 5 10 15 20}")"
 
 read -r -a RUN_MODES_LIST <<< "$RUN_MODES_RAW"
 read -r -a RUN_ANNOTATION_MODES_LIST <<< "$RUN_ANNOTATION_MODES_RAW"
@@ -53,7 +53,7 @@ if [[ ${#RUN_ANNOTATION_MODES_LIST[@]} -eq 0 ]]; then
 fi
 
 if [[ ${#THRESHOLDS_LIST[@]} -eq 0 ]]; then
-	echo "No thresholds configured. Set THRESHOLDS, for example: THRESHOLDS=\"5.0 7.5 10.0\""
+	echo "No thresholds configured. Set THRESHOLDS, for example: THRESHOLDS=\"0 1 5 10 15 20\""
 	exit 1
 fi
 
@@ -90,8 +90,8 @@ auto_configure_max_jobs() {
 		cpu_count=1
 	fi
 
-	# 对 CPU 密集型任务默认使用约 50% 核心，至少 1 个。
-	local suggested=$((cpu_count / 2))
+	# auto 默认使用全部 CPU 核心，至少 1 个。
+	local suggested=$cpu_count
 	if [[ "$suggested" -lt 1 ]]; then
 		suggested=1
 	fi
