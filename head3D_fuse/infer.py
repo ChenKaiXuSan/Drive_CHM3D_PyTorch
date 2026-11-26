@@ -50,7 +50,12 @@ from head3D_fuse.visualization.vis_utils import (
 )
 
 # fuse
-from head3D_fuse.fuse.fuse import fuse_3view_keypoints
+from head3D_fuse.fuse.fuse import (
+    align_view_with_fixed_rotation,
+    estimate_fixed_view_rotations,
+    estimate_view_placements,
+    fuse_3view_keypoints,
+)
 
 # temporal smooth
 from head3D_fuse.smooth.temporal_smooth import (
@@ -62,7 +67,6 @@ from head3D_fuse.smooth.compare_fused_smoothed import KeypointsComparator
 from head3D_fuse.fuse.compare_fused import FusedViewComparator
 
 logger = logging.getLogger(__name__)
-VALID_ALIGNMENT_METHODS = ("none", "procrustes", "procrustes_trimmed")
 
 # 定义需要保留的关键点索引：头部 + 肩部/颈部 + 双手
 KEEP_KEYPOINT_INDICES = (
@@ -78,6 +82,88 @@ KEEP_KEYPOINT_INDICES = (
 
 
 # =====================================================================
+# 视角对齐：以 front 为参考的固定旋转
+# =====================================================================
+def _estimate_env_view_alignment(
+    person_id: str,
+    env_name: str,
+    infer_root: Path,
+    cfg: DictConfig,
+    frame_triplets: list,
+    view_list: list,
+) -> tuple:
+    """估计本段记录每个视角 -> 参考视角(front) 的固定旋转，并保存到 view_rotations.json。
+
+    Returns:
+        (view_rotations, view_placements)。仅 alignment_method == "fixed_rotation" 时需要，
+        其余方法返回 (None, None)。
+    """
+    if cfg.fuse.get("alignment_method", "fixed_rotation") != "fixed_rotation":
+        return None, None
+    # 只用三个视角都有的帧估计
+    frame_triplets = [t for t in frame_triplets if len(t.npz_paths) == len(view_list)]
+    if not frame_triplets:
+        raise ValueError(f"No frame with all views for {person_id}/{env_name}")
+    reference = cfg.fuse.get("alignment_reference") or "front"
+    n_sample = int(cfg.fuse.get("alignment_num_frames", 1000))
+    pick = np.unique(
+        np.linspace(
+            0, len(frame_triplets) - 1, min(n_sample, len(frame_triplets))
+        ).astype(int)
+    )
+    sequences = {view: [] for view in view_list}
+    for i in pick:
+        for view in view_list:
+            output = load_npz_output(frame_triplets[i].npz_paths[view])
+            sequences[view].append(_normalize_raw_keypoints(output))
+    sequences = {view: np.stack(seq) for view, seq in sequences.items()}
+    rotations, info = estimate_fixed_view_rotations(
+        sequences,
+        reference=reference,
+        keep_ratio=float(cfg.fuse.get("alignment_keep_ratio", 0.5)),
+        keypoint_indices=cfg.fuse.get("alignment_keypoint_indices"),
+    )
+    placements = estimate_view_placements(
+        sequences,
+        rotations,
+        reference=reference,
+        allow_scale=cfg.fuse.get("alignment_scale", True),
+        keypoint_indices=cfg.fuse.get("alignment_keypoint_indices"),
+    )
+    logger.info("Fixed rotations to '%s' for %s/%s: %s", reference, person_id, env_name, info)
+    save_path = infer_root / person_id / env_name / "view_rotations.json"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    with save_path.open("w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "reference": reference,
+                "convention": "row vectors: points_in_reference = points_in_view @ rotation",
+                "rotations": {view: rot.tolist() for view, rot in rotations.items()},
+                "placements": {
+                    view: {"scale": v["scale"], "offset": np.asarray(v["offset"]).tolist()}
+                    for view, v in placements.items()
+                },
+                "info": info,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+    return rotations, placements
+
+
+def _normalize_raw_keypoints(output: dict) -> np.ndarray:
+    """取出未过滤的 (N, 3) 关键点；缺失时返回全 NaN，保证各帧形状一致。"""
+    keypoints = output.get("pred_keypoints_3d")
+    if keypoints is None:
+        return np.full((70, 3), np.nan, dtype=np.float64)
+    keypoints = np.asarray(keypoints, dtype=np.float64)
+    if keypoints.ndim == 3:
+        keypoints = keypoints[0]
+    return keypoints
+
+
+# =====================================================================
 # Fuse 处理函数
 # =====================================================================
 def _fuse_single_person_env(
@@ -87,6 +173,8 @@ def _fuse_single_person_env(
     cfg: DictConfig,
     frame_triplets: list,
     view_list: list,
+    view_rotations: Optional[dict] = None,
+    view_placements: Optional[dict] = None,
 ) -> list:
     """融合多视图关键点
 
@@ -127,13 +215,17 @@ def _fuse_single_person_env(
         }
         keypoints_by_view = {}
         for view in view_list:
+            if view not in outputs:
+                # 该视角没检测到人
+                keypoints_by_view[view] = np.full((70, 3), np.nan, dtype=np.float64)
+                continue
             filtered_view_3dkpt = _normalize_keypoints(
                 outputs[view].get("pred_keypoints_3d")
             )
             filtered_view_2dkpt = _normalize_keypoints(
                 outputs[view].get("pred_keypoints_2d")
             )
-            keypoints_by_view[view] = outputs[view]["pred_keypoints_3d"]
+            keypoints_by_view[view] = _normalize_raw_keypoints(outputs[view])
             outputs[view]["filtered_pred_keypoints_3d"] = filtered_view_3dkpt
             outputs[view]["filtered_pred_keypoints_2d"] = filtered_view_2dkpt
 
@@ -141,7 +233,9 @@ def _fuse_single_person_env(
         missing_views = [
             view for view, kpt in keypoints_by_view.items() if np.all(np.isnan(kpt))
         ]
-        if missing_views:
+        if len(view_list) - len(missing_views) < int(
+            cfg.infer.get("min_views", len(view_list))
+        ):
             logger.warning(
                 "Missing pred_keypoints_3d for frame %s in %s/%s (views: %s)",
                 triplet.frame_idx,
@@ -153,8 +247,8 @@ def _fuse_single_person_env(
 
         view_transforms = cfg.fuse.get("view_transforms")
         transform_mode = cfg.fuse.get("transform_mode", "world_to_camera")
-        alignment_method = cfg.fuse.get("alignment_method", "none")
-        alignment_reference = cfg.fuse.get("alignment_reference")
+        alignment_method = cfg.fuse.get("alignment_method", "fixed_rotation")
+        alignment_reference = cfg.fuse.get("alignment_reference") or "front"
         alignment_scale = cfg.fuse.get("alignment_scale", True)
         alignment_trim_ratio = cfg.fuse.get("alignment_trim_ratio", 0.2)
         alignment_max_iters = cfg.fuse.get("alignment_max_iters", 3)
@@ -170,6 +264,9 @@ def _fuse_single_person_env(
             alignment_scale=alignment_scale,
             alignment_trim_ratio=alignment_trim_ratio,
             alignment_max_iters=alignment_max_iters,
+            view_rotations=view_rotations,
+            alignment_keypoint_indices=cfg.fuse.get("alignment_keypoint_indices"),
+            view_placements=view_placements,
         )
 
         fused_frame_indices.append(triplet.frame_idx)
@@ -185,7 +282,7 @@ def _fuse_single_person_env(
         )
 
         # 可视化结果
-        if i in random_save_idx:
+        if i in random_save_idx and len(outputs) == len(view_list):
             # 单独保存三个视角的可视化结果
             if cfg.visualize.save_single_view_visualization:
                 for view in view_list:
@@ -702,8 +799,12 @@ def _compare_fused_with_views(
     frame_triplets: list,
     fused_frame_indices: list,
     view_list: list,
+    view_rotations: Optional[dict] = None,
 ):
     """比较融合结果与各个单视角的3D关键点
+
+    fixed_rotation 模式下，各视角先转到 front 坐标系再比较；
+    否则左右视角与融合结果不在同一坐标系，距离没有意义。
 
     Args:
         person_env_dir: 人员环境目录
@@ -733,16 +834,22 @@ def _compare_fused_with_views(
     logger.info("=" * 70)
 
     try:
-        # 1. 准备数据：将字典转换为numpy数组
-        sorted_frames = [int(idx) for idx in fused_frame_indices]
+        # 1. 准备数据：将字典转换为numpy数组（只比较所有视角都有的帧）
+        full_frames = {
+            t.frame_idx for t in frame_triplets if len(t.npz_paths) == len(view_list)
+        }
+        all_fused_frames = [int(idx) for idx in fused_frame_indices]
+        keep = [i for i, idx in enumerate(all_fused_frames) if idx in full_frames]
+        sorted_frames = [all_fused_frames[i] for i in keep]
 
         # 融合后的关键点 (T, M, 3) - 使用过滤后关键点
-        fused_array = _filter_keypoints_sequence(keypoints_array)
+        fused_array = _filter_keypoints_sequence(keypoints_array[keep])
         logger.info(f"Fused keypoints shape: {fused_array.shape}")
 
         frame_to_triplet = {triplet.frame_idx: triplet for triplet in frame_triplets}
 
         # 各视角的关键点
+        reference_view = cfg.fuse.get("alignment_reference") or "front"
         view_keypoints = {}
         for view in view_list:
             view_kpts_list = []
@@ -755,7 +862,19 @@ def _compare_fused_with_views(
                     continue
 
                 frame_output = load_npz_output(triplet.npz_paths[view])
-                kpts_3d = _normalize_keypoints(frame_output.get("pred_keypoints_3d"))
+                kpts_3d = _normalize_raw_keypoints(frame_output)
+                if view_rotations is not None and view != reference_view:
+                    reference_output = load_npz_output(
+                        triplet.npz_paths[reference_view]
+                    )
+                    kpts_3d = align_view_with_fixed_rotation(
+                        _normalize_raw_keypoints(reference_output),
+                        kpts_3d,
+                        view_rotations[view],
+                        allow_scale=cfg.fuse.get("alignment_scale", True),
+                        keypoint_indices=cfg.fuse.get("alignment_keypoint_indices"),
+                    )
+                kpts_3d = _normalize_keypoints(kpts_3d)
 
                 view_kpts_list.append(kpts_3d)
 
@@ -855,12 +974,26 @@ def process_single_person_env(
 
     logger.info(f"==== Starting Process for Person: {person_id}, Env: {env_name} ====")
 
+    # 只有固定旋转能在缺少 front 时放置其余视角；其他对齐方式仍要求视角齐全
+    min_views = len(view_list)
+    if cfg.fuse.get("alignment_method", "fixed_rotation") == "fixed_rotation":
+        min_views = int(cfg.infer.get("min_views", len(view_list)))
     frame_triplets, report = assemble_view_npz_paths(
-        person_env_dir, view_list, annotation_dict
+        person_env_dir, view_list, annotation_dict, min_views=min_views
     )
     if not frame_triplets:
         logger.warning(f"No aligned frames found for {person_id}/{env_name}")
         return
+
+    # 0. 估计各视角 -> front 的固定旋转
+    view_rotations, view_placements = _estimate_env_view_alignment(
+        person_id=person_id,
+        env_name=env_name,
+        infer_root=infer_root,
+        cfg=cfg,
+        frame_triplets=frame_triplets,
+        view_list=view_list,
+    )
 
     # 1. 融合多视图关键点
     fused_frame_indices = _fuse_single_person_env(
@@ -870,6 +1003,8 @@ def process_single_person_env(
         cfg=cfg,
         frame_triplets=frame_triplets,
         view_list=view_list,
+        view_rotations=view_rotations,
+        view_placements=view_placements,
     )
 
     # 2. 平滑融合后的关键点
@@ -901,6 +1036,7 @@ def process_single_person_env(
         frame_triplets=frame_triplets,
         fused_frame_indices=fused_frame_indices,
         view_list=view_list,
+        view_rotations=view_rotations,
     )
 
     # * 结束推理一个人的一个环境之后，清空内存

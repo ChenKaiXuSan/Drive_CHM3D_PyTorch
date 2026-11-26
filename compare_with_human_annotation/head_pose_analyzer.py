@@ -12,6 +12,8 @@ from .load import (
     get_unlabeled_frame_indices,
 )
 from .angle_calculator import (
+    circular_mean_deg,
+    wrap_angle_deg,
     KEYPOINT_INDICES,
     LABEL_DIRECTION_MAP,
     calculate_head_angles,
@@ -87,7 +89,9 @@ class HeadPoseAnalyzer:
 
         return {
             "pitch": angles.get("pitch", 0.0) - baseline_angles.get("pitch", 0.0),
-            "yaw": angles.get("yaw", 0.0) - baseline_angles.get("yaw", 0.0),
+            "yaw": float(
+                wrap_angle_deg(angles.get("yaw", 0.0) - baseline_angles.get("yaw", 0.0))
+            ),
         }
 
     @staticmethod
@@ -274,7 +278,7 @@ class HeadPoseAnalyzer:
 
         mean_keypoints = keypoints_sum / len(selected_records)
         mean_pitch = float(np.mean([angles[0] for angles in angle_values]))
-        mean_yaw = float(np.mean([angles[1] for angles in angle_values]))
+        mean_yaw = circular_mean_deg([angles[1] for angles in angle_values])
 
         return {
             "video_id": video_id,

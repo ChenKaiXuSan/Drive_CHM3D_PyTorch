@@ -11,6 +11,7 @@ Last Modified: August 4th, 2025
 import logging
 import multiprocessing as mp
 import os
+import sys
 from pathlib import Path
 from typing import List
 
@@ -75,6 +76,7 @@ def _worker(
         f"🏃‍♂️ {_worker.__name__} 启动，Worker {worker_id} 任务数: {len(env_dirs)}"
     )
 
+    failed = []
     for env_dir in env_dirs:
         # 为每个env创建专用logger并将其输出到独立日志文件
         person_id = env_dir.parent.name
@@ -103,10 +105,18 @@ def _worker(
         
         env_logger.info(f"开始处理 Person: {person_id}, Env: {env_name}")
         
-        process_single_person_env(env_dir, out_root, infer_root, cfg)
-        
+        try:
+            process_single_person_env(env_dir, out_root, infer_root, cfg)
+        except Exception:
+            failed.append(f"{person_id}/{env_name}")
+            env_logger.exception(f"处理失败 Person: {person_id}, Env: {env_name}")
+            continue
+
         env_logger.info(f"完成处理 Person: {person_id}, Env: {env_name}")
 
+    if failed:
+        logger.error(f"Worker {worker_id} 失败的任务: {failed}")
+        sys.exit(1)
     logger.info(f"🏁 {_worker.__name__} Worker {worker_id} 所有任务处理完毕")
 
 
@@ -188,6 +198,10 @@ def main(cfg: DictConfig) -> None:
     for p in processes:
         p.join()
 
+    n_failed = sum(p.exitcode != 0 for p in processes)
+    if n_failed:
+        logger.error(f"❌ {n_failed}/{len(processes)} 个进程有失败的任务，请查看 worker 日志")
+        sys.exit(1)
     logger.info("🎉 [SUCCESS] 所有任务已圆满完成！")
 
 

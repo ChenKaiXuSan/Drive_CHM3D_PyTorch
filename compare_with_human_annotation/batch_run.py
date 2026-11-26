@@ -11,6 +11,7 @@ from typing import Optional
 
 from omegaconf import DictConfig
 
+from .angle_calculator import axis_direction_matched
 from .head_pose_analyzer import HeadPoseAnalyzer
 from .load import (
     load_head_movement_annotations,
@@ -88,12 +89,7 @@ def _calculate_axis_comparison_stats(comparisons) -> dict:
                 continue
             label = annotation.label.lower()
             by_direction_axis[label]["total"] += 1
-            matched = False
-            if m.get("yaw_axis_active", False):
-                matched = bool(m.get("yaw_match", False))
-            elif m.get("pitch_axis_active", False):
-                matched = bool(m.get("pitch_match", False))
-            if matched:
+            if axis_direction_matched(m):
                 by_direction_axis[label]["matched"] += 1
 
     for direction, stats in by_direction_axis.items():
@@ -654,6 +650,7 @@ def run_batch_comparison_by_annotator(
         if annotations_by_annotator
         else []
     )
+    # 每个视频的标注者顺序和数量一致（按 completed_by 排序，缺失者为空列表）
     num_annotators = len(first_video_annotations)
     print(f"✓ 检测到 {num_annotators} 位标注者")
 

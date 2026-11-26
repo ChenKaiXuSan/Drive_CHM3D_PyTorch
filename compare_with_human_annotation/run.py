@@ -19,7 +19,9 @@ from .load import (
     load_sam3d_keypoints,
 )
 from .angle_calculator import (
+    axis_direction_matched,
     calculate_head_angles,
+    circular_mean_deg,
     estimate_stable_front_baseline,
     extract_head_keypoints,
 )
@@ -336,7 +338,7 @@ def _estimate_front_baseline_from_angles(
     selected_yaw = yaw_arr[selected_local_idx]
 
     mean_pitch = float(np.mean(selected_pitch)) if selected_pitch.size > 0 else 0.0
-    mean_yaw = float(np.mean(selected_yaw)) if selected_yaw.size > 0 else 0.0
+    mean_yaw = circular_mean_deg(selected_yaw) if selected_yaw.size > 0 else 0.0
 
     return {
         "video_id": video_id,
@@ -444,12 +446,7 @@ def _calculate_axis_comparison_stats(comparisons: Dict[int, Dict]) -> Dict[str, 
         for m in comp.get("matches", []):
             label = str(m.get("annotation", {}).get("label", "unknown")).lower()
             by_direction_axis[label]["total"] += 1
-            matched = False
-            if m.get("yaw_axis_active", False):
-                matched = bool(m.get("yaw_match", False))
-            elif m.get("pitch_axis_active", False):
-                matched = bool(m.get("pitch_match", False))
-            if matched:
+            if axis_direction_matched(m):
                 by_direction_axis[label]["matched"] += 1
 
     for direction, stats in by_direction_axis.items():

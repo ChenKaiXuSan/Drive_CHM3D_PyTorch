@@ -51,6 +51,7 @@ from .angle_calculator import (
     classify_label,
     direction_match,
     extract_head_keypoints,
+    subtract_front_baseline,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,7 +208,7 @@ class HeadPoseAnalyzer:
                 logger.warning(f"Failed to analyze frame {frame_idx}")
 
         logger.info(f"Successfully analyzed {len(results)} frames")
-        return results
+        return subtract_front_baseline(results)
 
     def compare_with_annotations(
         self,

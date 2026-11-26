@@ -17,6 +17,9 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+# 标注帧号(24 fps) -> 相机帧号(29.97 fps)
+from common.frame_rate import annotation_to_camera_frame
+
 logger = logging.getLogger(__name__)
 
 
@@ -141,8 +144,8 @@ def load_head_movement_annotations(json_path: Path) -> Dict[str, List[HeadMoveme
                 # 每个range可能有多个label
                 for label in timelinelabels:
                     labels.append(HeadMovementLabel(
-                        start_frame=int(start),
-                        end_frame=int(end),
+                        start_frame=annotation_to_camera_frame(start),
+                        end_frame=annotation_to_camera_frame(end),
                         label=label
                     ))
         
@@ -216,8 +219,8 @@ def load_multi_annotator_annotations(
                 for label in timelinelabels:
                     labels.append(
                         HeadMovementLabel(
-                            start_frame=int(start),
-                            end_frame=int(end),
+                            start_frame=annotation_to_camera_frame(start),
+                            end_frame=annotation_to_camera_frame(end),
                             label=label,
                         )
                     )

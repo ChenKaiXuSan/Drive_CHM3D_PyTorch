@@ -32,15 +32,62 @@ KEYPOINT_INDICES = {
     "neck": 69,
 }
 
-# 标注方向到角度方向的映射
-# 5个基本方向：前、上、下、左、右
+# 标注方向到角度方向的映射 (pitch_dir, yaw_dir)
+# 前、上、下、左、右 + 4 个斜向；左右均以驾驶员自身为准
 LABEL_DIRECTION_MAP = {
     "front": (0, 0),  # 朝向正前方
     "up": (1, 0),  # 向上点头
     "down": (-1, 0),  # 向下点头
     "left": (0, -1),  # 向左转头
     "right": (0, 1),  # 向右转头
+    "left_up": (1, -1),
+    "left_down": (-1, -1),
+    "right_up": (1, 1),
+    "right_down": (-1, 1),
 }
+
+# 坐标约定：关键点在相机坐标系(OpenCV)，X 向图像右、Y 向下、Z 远离相机。
+# 驾驶员面对相机时朝向 -Z，驾驶员的右侧是图像左侧(-X)，上方是 -Y。
+
+
+def wrap_angle_deg(angle):
+    """把角度(标量或数组)折回 [-180, 180)。"""
+    return (np.asarray(angle, dtype=np.float64) + 180.0) % 360.0 - 180.0
+
+
+def circular_mean_deg(angles) -> float:
+    """角度平均值（在 ±180° 处也正确）。"""
+    rad = np.radians(np.asarray(angles, dtype=np.float64))
+    return float(np.degrees(np.arctan2(np.sin(rad).mean(), np.cos(rad).mean())))
+
+
+def estimate_front_yaw(yaw_vals: np.ndarray, half_width: float = 3.0) -> float:
+    """估计"正面"的 yaw：最常见的头部朝向（1° 直方图众数，±half_width 内取均值）。
+
+    不能假设正面就是 0°：侧面相机里正面约在 ±30~40°，front 相机也有几度偏差。
+    """
+    yaw = wrap_angle_deg(np.asarray(yaw_vals, dtype=np.float64))
+    yaw = yaw[np.isfinite(yaw)]
+    if yaw.size == 0:
+        return 0.0
+    hist, edges = np.histogram(yaw, bins=np.arange(-180.0, 181.0, 1.0))
+    # 环形平滑，避免众数落在单个噪声格子上
+    smooth = np.convolve(np.r_[hist[-2:], hist, hist[:2]], np.ones(5), mode="valid")
+    center = float(edges[int(np.argmax(smooth))] + 0.5)
+    near = wrap_angle_deg(yaw - center)
+    near = near[np.abs(near) <= half_width]
+    offset = float(near.mean()) if near.size else 0.0
+    return float(wrap_angle_deg(center + offset))
+
+
+def axis_direction_matched(match: Dict) -> bool:
+    """一个标注涉及的所有轴都匹配才算方向正确（斜向需要左右和上下都对）。"""
+    active = [
+        bool(match.get(f"{axis}_match", False))
+        for axis in ("yaw", "pitch")
+        if match.get(f"{axis}_axis_active", False)
+    ]
+    return bool(active) and all(active)
 
 
 def extract_head_keypoints(
@@ -98,7 +145,7 @@ def calculate_head_angles(
     """
     # ===== 1. 计算Pitch（俯仰角）=====
     # Use nose-ears plane geometry: ear-center->nose vector with ear-axis
-    # component removed, then measure elevation against XY plane.
+    # component removed, then measure elevation against the horizontal X-Z plane.
     pitch_deg = calculate_pitch_from_nose_ears_plane(head_kpts)
     if not np.isfinite(pitch_deg):
         pitch_deg = 0.0
@@ -110,7 +157,11 @@ def calculate_head_angles(
 
 
 def calculate_yaw_from_nose_ears(head_kpts: Dict[str, np.ndarray]) -> float:
-    """Calculate yaw from the nose and ear-center geometry on a single frame."""
+    """Yaw of the ear-center -> nose direction in the horizontal (X-Z) plane.
+
+    Returns:
+        yaw in degrees; 0 = facing the camera, driver's right > 0, left < 0.
+    """
     nose = np.asarray(head_kpts["nose"], dtype=np.float64)
     left_ear = np.asarray(head_kpts["left_ear"], dtype=np.float64)
     right_ear = np.asarray(head_kpts["right_ear"], dtype=np.float64)
@@ -122,15 +173,12 @@ def calculate_yaw_from_nose_ears(head_kpts: Dict[str, np.ndarray]) -> float:
     ):
         return float("nan")
 
-    ear_center = (left_ear + right_ear) / 2.0
-    forward_line = nose - ear_center
-    forward_xy = np.array([forward_line[0], forward_line[1]], dtype=np.float64)
-
-    if np.linalg.norm(forward_xy) < 1e-6:
+    forward = nose - (left_ear + right_ear) / 2.0
+    if np.hypot(forward[0], forward[2]) < 1e-6:
         return float("nan")
 
-    yaw = np.arctan2(forward_xy[0], forward_xy[1])
-    return float(np.degrees(yaw))
+    # 面对相机时 forward 指向 -Z；驾驶员右侧是图像左侧(-X)
+    return float(np.degrees(np.arctan2(-forward[0], -forward[2])))
 
 
 def calculate_pitch_from_nose_ears_plane(
@@ -141,7 +189,8 @@ def calculate_pitch_from_nose_ears_plane(
     Steps:
     1) Compute ear center C and vector v = nose - C
     2) Remove ear-axis (left-ear -> right-ear) component from v
-    3) Measure elevation angle of the residual vector against XY plane
+    3) Measure elevation angle of the residual vector against the horizontal
+       (X-Z) plane; the camera Y axis points down, so up is -Y
 
     Returns:
         pitch in degrees, where up > 0 and down < 0
@@ -167,11 +216,11 @@ def calculate_pitch_from_nose_ears_plane(
     v = nose - ear_center
     v_perp = v - np.dot(v, ear_axis) * ear_axis
 
-    horiz = np.linalg.norm(v_perp[:2])
-    if horiz < 1e-6 and abs(v_perp[2]) < 1e-6:
+    horiz = np.hypot(v_perp[0], v_perp[2])
+    if horiz < 1e-6 and abs(v_perp[1]) < 1e-6:
         return float("nan")
 
-    return float(np.degrees(np.arctan2(v_perp[2], horiz)))
+    return float(np.degrees(np.arctan2(-v_perp[1], horiz)))
 
 
 def estimate_stable_front_baseline(
@@ -186,7 +235,8 @@ def estimate_stable_front_baseline(
     """Estimate a robust front baseline from frame-wise pitch/yaw sequences.
 
     The baseline is estimated in three stages:
-    1) Select candidate frames with smallest |yaw|
+    1) Select candidate frames whose yaw is closest to the most common yaw
+       (:func:`estimate_front_yaw`)
     2) Iteratively reject outliers in candidate pitch by median + MAD
     3) Choose the closest inliers to the robust center and take median pitch
 
@@ -203,13 +253,14 @@ def estimate_stable_front_baseline(
     valid_indices = np.where(valid_mask)[0]
     pitch_valid = pitch_arr[valid_indices]
     yaw_valid = yaw_arr[valid_indices]
+    yaw_offset = np.abs(wrap_angle_deg(yaw_valid - estimate_front_yaw(yaw_valid)))
 
     n_frames = len(valid_indices)
     n_front = max(min_front_frames, int(n_frames * front_ratio))
     n_front = min(n_front, n_frames)
 
     n_candidates = min(n_frames, max(n_front, int(n_front * candidate_expand)))
-    candidate_order = np.argsort(np.abs(yaw_valid))[:n_candidates]
+    candidate_order = np.argsort(yaw_offset)[:n_candidates]
     candidate_local_idx = candidate_order
     candidate_idx = valid_indices[candidate_local_idx]
     candidate_pitch = pitch_valid[candidate_local_idx]
@@ -238,7 +289,7 @@ def estimate_stable_front_baseline(
     inlier_idx = candidate_idx[inlier_mask]
 
     if inlier_idx.size < min(10, n_front):
-        selected_local = np.argsort(np.abs(yaw_valid))[:n_front]
+        selected_local = np.argsort(yaw_offset)[:n_front]
         selected_idx = valid_indices[selected_local]
     else:
         inlier_pitch = pitch_arr[inlier_idx]

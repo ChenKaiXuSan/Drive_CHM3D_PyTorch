@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Four alignment comparison experiments for head3D_fuse:
+# Alignment comparison experiments for head3D_fuse:
+#   0) fixed_rotation (default pipeline: one rotation per view to the front camera)
 #   1) none
 #   2) procrustes
 #   3) procrustes_trimmed
@@ -80,6 +81,10 @@ launch_exp() {
   METHODS+=("${method}")
   echo "Launched ${method} (pid=${pid})"
 }
+
+# 0) Fixed rotation to front (default pipeline)
+launch_exp "fixed_rotation" \
+  "fuse.alignment_reference=front"
 
 # 1) No alignment
 launch_exp "none"

@@ -86,9 +86,24 @@ if missing_views:
 
 ## 3. 阶段2：坐标对齐（可选）
 
-融合前可选地将各视角对齐到统一坐标系。有三种模式：
+各视角关键点在各自的相机坐标系里，融合前必须转到同一坐标系。
 
-### 3.1 模式1：无对齐（alignment_method = "none"）
+### 3.0 默认模式：以 front 为参考的固定旋转（alignment_method = "fixed_rotation"）
+
+相机在一段记录内不动，所以 left→front、right→front 的旋转是常数。
+
+1. 均匀抽取 `alignment_num_frames` 帧，逐帧求 left/right 到 front 的相似变换；
+2. 取残差最小的 `alignment_keep_ratio` 比例的帧，在 SO(3) 上平均，得到每个视角**一个**固定旋转
+   （`estimate_fixed_view_rotations`，保存为 `view_rotations.json`）；
+3. 每帧先用固定旋转把 left/right 转到 front 坐标系，再只对齐质心和尺度
+   （`align_view_with_fixed_rotation`）；
+4. 逐关键点取中位数融合。
+
+`alignment_keypoint_indices` 默认只用头、肩、颈 10 个点；手部点在三视角间差异大，会把对齐带偏。
+
+约定：点是行向量，`points_in_front = points_in_view @ rotation`。
+
+### 3.1 对照：无对齐（alignment_method = "none"）
 
 **配置：**
 ```yaml
@@ -153,15 +168,12 @@ def _estimate_similarity_transform(source, target, allow_scale=True):
     # SVD 求最优旋转
     H = source_centered.T @ target_centered
     U, S, Vt = np.linalg.svd(H)
-    R = Vt.T @ U.T
-    
-    # 修正行列式（确保旋转不是反射）
-    if det(R) < 0:
-        Vt[-1] *= -1
-        R = Vt.T @ U.T
+    # 点是行向量(points @ R)，所以 R = U D Vt；列向量约定的 V D Ut 是它的转置
+    D = diag(1, 1, sign(det(U @ Vt)))   # 确保旋转不是反射
+    R = U @ D @ Vt
     
     # 尺度估计
-    scale = sum(S) / sum(source_centered**2) if allow_scale else 1.0
+    scale = sum(S * diag(D)) / sum(source_centered**2) if allow_scale else 1.0
     
     # 平移估计
     translation = target.mean() - scale * (source.mean() @ R)

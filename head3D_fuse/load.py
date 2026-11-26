@@ -8,6 +8,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from common.frame_rate import annotation_to_camera_frame
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,7 +76,14 @@ def assemble_view_npz_paths(
     person_env_dir: Path,
     view_list: List[str],
     annotation_dict: Optional[dict] = None,
+    min_views: Optional[int] = None,
 ) -> Tuple[List[FrameTriplet], Dict[str, Dict[str, List[int]]]]:
+    """收集每帧各视角的 npz。
+
+    min_views: 一帧至少要有几个视角才参与融合；None 表示必须所有视角都有。
+    视角不全时，FrameTriplet.npz_paths 只包含存在的视角。
+    """
+    min_views = len(view_list) if min_views is None else int(min_views)
     view_frames: Dict[str, Dict[int, Path]] = {}
     for view in view_list:
         view_frames[view] = _collect_view_npz(person_env_dir / view)
@@ -101,13 +110,15 @@ def assemble_view_npz_paths(
         common_frames = set()
         all_frames = set()
 
-    frame_triplets = [
-        FrameTriplet(
-            frame_idx=frame_idx,
-            npz_paths={view: view_frames[view][frame_idx] for view in view_list},
-        )
-        for frame_idx in sorted(common_frames)
-    ]
+    frame_triplets = []
+    for frame_idx in sorted(all_frames):
+        npz_paths = {
+            view: view_frames[view][frame_idx]
+            for view in view_list
+            if frame_idx in view_frames[view]
+        }
+        if len(npz_paths) >= min_views:
+            frame_triplets.append(FrameTriplet(frame_idx=frame_idx, npz_paths=npz_paths))
 
     report = {
         "frames_per_view": {
@@ -220,7 +231,10 @@ def get_annotation_dict(file_path: str) -> dict:
             if label_name in frames:
                 # ranges[0]['start'] が存在するか安全に取得
                 ranges = label_obj.get("ranges", [{}])
-                frames[label_name] = ranges[0].get("start")
+                start = ranges[0].get("start")
+                if start is not None:
+                    # 标注是 24 fps 帧号，融合用的是相机帧号
+                    frames[label_name] = annotation_to_camera_frame(start)
 
         person_entry[env_name] = frames
 
