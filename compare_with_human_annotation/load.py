@@ -18,12 +18,13 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from common.frame_rate import annotation_to_camera_frame
 
+logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class HeadMovementLabel:
-    """头部动作标注信息"""
+    """头部动作标注信息（start/end 为相机帧号）"""
     start_frame: int
     end_frame: int
     label: str  # e.g., "right", "left", "up", "down"
@@ -71,8 +72,8 @@ def _extract_labels_from_result(result: List[dict]) -> List[HeadMovementLabel]:
             for label in timelinelabels:
                 labels.append(
                     HeadMovementLabel(
-                        start_frame=int(start),
-                        end_frame=int(end),
+                        start_frame=annotation_to_camera_frame(start),
+                        end_frame=annotation_to_camera_frame(end),
                         label=label,
                     )
                 )
@@ -355,13 +356,17 @@ def load_annotations_by_annotator(
     """
     从JSON文件加载头部动作标注，按标注者分组。
 
+    标注者用 Label Studio 的 ``completed_by`` 区分，而不是 annotations 列表中的位置
+    （同一位置在不同视频里可能是不同的人）。所有视频使用同一个标注者顺序：
+    completed_by 从小到大；某人没有标注的视频，对应列表为空。
+
     Returns:
         字典，键为视频ID，值为标注者列表，每个标注者是一个HeadMovementLabel列表
         例如: {
             "01_day_high": [
-                [Label1_from_annotator1, ...],  # 标注者1的标注
-                [Label2_from_annotator2, ...],  # 标注者2的标注
-                [Label3_from_annotator3, ...],  # 标注者3的标注
+                [Label1_from_annotator1, ...],  # completed_by 最小的标注者
+                [Label2_from_annotator2, ...],
+                [Label3_from_annotator3, ...],
             ]
         }
     """
@@ -376,6 +381,16 @@ def load_annotations_by_annotator(
         logger.error(f"Failed to load annotation file {json_path}: {e}")
         return {}
 
+    annotator_ids = sorted(
+        {
+            annotation.get("completed_by")
+            for item in data
+            for annotation in item.get("annotations", [])
+            if annotation.get("completed_by") is not None
+        }
+    )
+    logger.info("Annotators (completed_by) in order: %s", annotator_ids)
+
     annotations: Dict[str, List[List[HeadMovementLabel]]] = {}
 
     for item in data:
@@ -389,17 +404,19 @@ def load_annotations_by_annotator(
         if not video_id:
             continue
 
-        labels_by_annotator: List[List[HeadMovementLabel]] = []
-        for annotation_idx, annotation in enumerate(annotations_list):
-            labels = _extract_labels_from_result(annotation.get("result", []))
-            labels_by_annotator.append(labels)
-            logger.debug(
-                f"Loaded {len(labels)} annotations for {video_id} from annotator {annotation_idx + 1}"
+        labels_by_id: Dict[int, List[HeadMovementLabel]] = {
+            annotator_id: [] for annotator_id in annotator_ids
+        }
+        for annotation in annotations_list:
+            annotator_id = annotation.get("completed_by")
+            if annotator_id is None:
+                logger.warning("Annotation without completed_by in %s, skipped", video_id)
+                continue
+            labels_by_id[annotator_id].extend(
+                _extract_labels_from_result(annotation.get("result", []))
             )
 
-        if labels_by_annotator:
-            annotations[video_id] = labels_by_annotator
-            logger.debug(f"Loaded {len(labels_by_annotator)} annotators for {video_id}")
+        annotations[video_id] = [labels_by_id[i] for i in annotator_ids]
 
     logger.info(f"Loaded annotations (by annotator) for {len(annotations)} videos")
     return annotations
@@ -467,8 +484,8 @@ def load_multi_annotator_annotations(
                 for label in timelinelabels:
                     labels.append(
                         HeadMovementLabel(
-                            start_frame=int(start),
-                            end_frame=int(end),
+                            start_frame=annotation_to_camera_frame(start),
+                            end_frame=annotation_to_camera_frame(end),
                             label=label,
                         )
                     )

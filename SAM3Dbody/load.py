@@ -29,6 +29,8 @@ from typing import Dict, List
 import cv2
 import numpy as np
 
+from common.frame_rate import annotation_to_camera_frame
+
 logger = logging.getLogger(__name__)
 
 
@@ -120,8 +122,9 @@ def get_annotation_dict(file_path):
             if labels:
                 label_name = labels[0]
                 frame_num = label_obj.get("ranges", [{}])[0].get("start")
-                if label_name in frames:
-                    frames[label_name] = frame_num
+                if label_name in frames and frame_num is not None:
+                    # 标注是 24 fps 帧号，推理按相机帧号
+                    frames[label_name] = annotation_to_camera_frame(frame_num)
 
         # 辞書への格納
         if person not in master_dict:

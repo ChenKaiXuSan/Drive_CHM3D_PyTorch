@@ -33,7 +33,7 @@ from tqdm import tqdm
 from .sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
 from .sam_3d_body.metadata.mhr70 import pose_info as mhr70_pose_info
 from .sam_3d_body.visualization.skeleton_visualizer import SkeletonVisualizer
-from .save import save_frame
+from .save import get_frame_path, save_frame
 from .vis import (
     vis_results,
 )
@@ -218,21 +218,19 @@ def process_frame_list(
 
     # * 根据 start_mid_end_dict 中的start mid信息进行切断frame_list
     if start_mid_end_dict:
+        # 相机帧号；end 为最后一帧（含），不超过视频长度
         start = start_mid_end_dict["start"]
-        mid = start_mid_end_dict["mid"]
-        end = start_mid_end_dict["end"]
-
-        # 第一阶段：只推理 start 到 mid 的部分， 以节省时间
-        # end = mid
-        # 第二阶段：只推理 mid-end 的部分， 以节省时间
-        start = mid
+        end = min(start_mid_end_dict["end"] + 1, len(frame_list))
 
         logger.info(
-            f"  根据 star, mid 信息处理帧数据: start={start}, mid={mid}, 总处理={end - start} 帧。"
+            f"  根据 start/end 信息处理帧数据: [{start}, {end})，共 {end - start} 帧。"
         )
     else:
         start = 0
         end = len(frame_list)
+
+    # 断点续跑：已有结果的帧不再推理
+    skip_existing = bool(cfg.infer.get("skip_existing", True))
 
     # sam3d body检测不出来人的时候记录一下
     none_detected_frames = []
@@ -240,8 +238,8 @@ def process_frame_list(
     # 这里需要保持帧号
     # for idx in tqdm(range(len(frame_list)), desc="Processing frames"):
     for idx in tqdm(range(start, end), desc="Processing frames"):
-        # if idx > 1:
-        #     break
+        if skip_existing and get_frame_path(inference_output_path, idx).exists():
+            continue
 
         outputs = estimator.process_one_image(
             img=frame_list[idx],

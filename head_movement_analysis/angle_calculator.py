@@ -17,6 +17,14 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
+from compare_with_human_annotation.angle_calculator import (
+    calculate_pitch_from_nose_ears_plane,
+    calculate_yaw_from_nose_ears,
+    circular_mean_deg,
+    estimate_stable_front_baseline,
+    wrap_angle_deg,
+)
+
 logger = logging.getLogger(__name__)
 
 # MHR70关键点索引定义
@@ -98,55 +106,38 @@ def calculate_head_angles(
         - yaw: 偏航角（左右转头），正值表示向右转，负值表示向左转
         - roll: 翻滚角（左右倾斜），正值表示向右倾斜，负值表示向左倾斜
     """
-    nose = head_kpts["nose"]
-    left_eye = head_kpts["left_eye"]
-    right_eye = head_kpts["right_eye"]
-    left_ear = head_kpts["left_ear"]
-    right_ear = head_kpts["right_ear"]
-    left_shoulder = head_kpts["left_shoulder"]
-    right_shoulder = head_kpts["right_shoulder"]
+    # Pitch/Yaw 与 compare_with_human_annotation 使用同一套公式：
+    # 相机坐标系 X 向图像右、Y 向下、Z 远离相机；右转为正、抬头为正。
+    pitch_deg = calculate_pitch_from_nose_ears_plane(head_kpts)
+    yaw_deg = calculate_yaw_from_nose_ears(head_kpts)
 
-    # 计算眼睛中心点、耳朵中心点和肩膀中心点
-    eye_center = (left_eye + right_eye) / 2
-    ear_center = (left_ear + right_ear) / 2
-    shoulder_center = (left_shoulder + right_shoulder) / 2
-
-    # ===== 1. 计算Pitch（俯仰角）=====
-    # 使用鼻子和肩膀中心的向量在垂直平面上的投影
-    nose_shoulder_vec = nose - shoulder_center
-    # 计算与水平面的夹角（假设Y轴向上）
-    horizontal_dist = np.sqrt(nose_shoulder_vec[0] ** 2 + nose_shoulder_vec[2] ** 2)
-    pitch = np.arctan2(nose_shoulder_vec[1], horizontal_dist)
-    pitch_deg = np.degrees(pitch)
-
-    # ===== 2. 计算Yaw（偏航角）=====
-    # 使用眼睛中心到肩膀中心的向量作为头部朝向的参考
-    # 这种方法比单纯用眼睛更稳定，利用整个头-肩膀系统的对齐
-    face_forward = nose - eye_center
-    shoulder_ref = shoulder_center - eye_center  # 从眼睛到肩膀的参考向量
-
-    # 在水平面上计算头部朝向
-    face_forward_horizontal = np.array([face_forward[0], 0, face_forward[2]])
-
-    # 计算与前方（-Z轴）的夹角
-    if np.linalg.norm(face_forward_horizontal) > 1e-6:
-        face_forward_horizontal = (
-            face_forward_horizontal / np.linalg.norm(face_forward_horizontal)
-        )
-        # 假设相机坐标系中-Z是前方，X是右侧
-        yaw = np.arctan2(face_forward_horizontal[0], -face_forward_horizontal[2])
-        yaw_deg = np.degrees(yaw)
-    else:
-        yaw_deg = 0.0
-
-    # ===== 3. 计算Roll（翻滚角）=====
-    # 使用左右眼睛连线与水平面的夹角
-    eye_vec = right_eye - left_eye
-    # 在X-Y平面上计算倾斜角度
-    roll = np.arctan2(eye_vec[1], eye_vec[0])
-    roll_deg = np.degrees(roll)
+    # Roll：两眼连线与水平面的夹角，头正时为 0，向驾驶员右侧倾斜为正
+    # （驾驶员左眼在图像右侧，所以用 左眼 - 右眼）
+    eye_vec = head_kpts["left_eye"] - head_kpts["right_eye"]
+    roll_deg = float(np.degrees(np.arctan2(-eye_vec[1], eye_vec[0])))
 
     return pitch_deg, yaw_deg, roll_deg
+
+
+def subtract_front_baseline(
+    results: Dict[int, Dict[str, float]],
+) -> Dict[int, Dict[str, float]]:
+    """把整段序列的角度减去"正面"基线（最常见朝向），使正面注视约为 0°。"""
+    frames = sorted(results)
+    if not frames:
+        return results
+    pitch = np.array([results[f]["pitch"] for f in frames], dtype=np.float64)
+    yaw = np.array([results[f]["yaw"] for f in frames], dtype=np.float64)
+    baseline_pitch, selected, _ = estimate_stable_front_baseline(pitch, yaw)
+    baseline_yaw = circular_mean_deg(yaw[selected]) if selected.size else 0.0
+    return {
+        f: {
+            **results[f],
+            "pitch": float(results[f]["pitch"] - baseline_pitch),
+            "yaw": float(wrap_angle_deg(results[f]["yaw"] - baseline_yaw)),
+        }
+        for f in frames
+    }
 
 
 def direction_match(angle_value: float, expected_dir: int, threshold: float) -> bool:

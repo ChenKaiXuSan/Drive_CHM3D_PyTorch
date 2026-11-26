@@ -26,6 +26,7 @@ Date      	By	Comments
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -52,6 +53,10 @@ def _to_object_array(x: Any) -> np.ndarray:
 # ---------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------
+def get_frame_path(save_dir: Path, frame_idx: int) -> Path:
+    return save_dir / f"{frame_idx:06d}_sam3d_body.npz"
+
+
 def save_frame(
     output: Dict[str, Any],
     save_dir: Path,
@@ -76,12 +81,17 @@ def save_frame(
 
     _ensure_dir(save_dir)
 
-    save_path = save_dir / f"{frame_idx:06d}_sam3d_body.npz"
+    save_path = get_frame_path(save_dir, frame_idx)
 
-    np.savez_compressed(
-        save_path,
-        output=_to_object_array(output),
-    )
+    # 先写临时文件再改名，中断时不会留下半个文件
+    tmp_path = save_dir / f".{frame_idx:06d}.{os.getpid()}.tmp"
+    try:
+        with tmp_path.open("wb") as f:
+            np.savez_compressed(f, output=_to_object_array(output))
+        os.replace(tmp_path, save_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
     logger.info(f"[SAVE] frame {frame_idx} -> {save_path}")
     return save_path
